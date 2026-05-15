@@ -16,8 +16,10 @@ GEMINI_KEYS = [
 GEMINI_KEYS = [k for k in GEMINI_KEYS if k and "сюда_ключ" not in k]
 
 
-def get_client():
-    key = random.choice(GEMINI_KEYS)
+def get_client(attempt=0):
+    if not GEMINI_KEYS:
+        raise Exception("NO_KEYS: Не настроены GEMINI_API_KEY переменные окружения")
+    key = GEMINI_KEYS[attempt % len(GEMINI_KEYS)]
     return genai.Client(api_key=key)
 
 
@@ -42,11 +44,11 @@ def safe_text(text):
 
 
 def ask_gpt(messages, attempt=0):
-    if attempt >= len(GEMINI_KEYS):
+    if attempt >= max(len(GEMINI_KEYS), 1):
         raise Exception("Все API ключи исчерпаны")
 
     try:
-        client = get_client()
+        client = get_client(attempt)
         response = client.models.generate_content(
             model="gemini-2.0-flash-lite",
             contents=build_contents(messages)
@@ -62,11 +64,11 @@ def ask_gpt(messages, attempt=0):
 
 
 def ask_gemini(messages, attempt=0):
-    if attempt >= len(GEMINI_KEYS):
+    if attempt >= max(len(GEMINI_KEYS), 1):
         raise Exception("Все API ключи исчерпаны")
 
     try:
-        client = get_client()
+        client = get_client(attempt)
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=build_contents(messages)
