@@ -11,9 +11,9 @@ from ai_clients import ask_gpt, ask_gemini
 
 logging.basicConfig(level=logging.CRITICAL)
 
-TOKEN        = "BOT_TOKEN"
-OWNER_ID     = "OWNER_ID"
-CRYPTO_TOKEN = "CRYPTO_TOKEN"
+TOKEN = os.getenv("BOT_TOKEN")
+OWNER_ID = int(os.getenv("OWNER_ID"))
+CRYPTO_TOKEN = os.getenv("CRYPTO_TOKEN")
 
 import database
 database.OWNER_ID = OWNER_ID
