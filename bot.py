@@ -11,9 +11,9 @@ from ai_clients import ask_gpt, ask_gemini
 
 logging.basicConfig(level=logging.CRITICAL)
 
-TOKEN = os.getenv("BOT_TOKEN")
-OWNER_ID = int(os.getenv("OWNER_ID"))
-CRYPTO_TOKEN = os.getenv("CRYPTO_TOKEN")
+TOKEN        = "BOT_TOKEN"
+OWNER_ID     = "OWNER_ID"
+CRYPTO_TOKEN = "CRYPTO_TOKEN"
 
 import database
 database.OWNER_ID = OWNER_ID
@@ -66,7 +66,7 @@ def set_main_menu(chat_id):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.add(
         types.KeyboardButton("💬 Chat with AI"),
-        types.KeyboardButton("👤 personal account")
+        types.KeyboardButton("👤 Personal account")
     )
     bot.send_message(chat_id, "Select chapter:", reply_markup=markup)
 
@@ -295,7 +295,7 @@ def check_crypto_payment(message):
 # Кнопки нижнего меню
 # ==============================
 
-@bot.message_handler(func=lambda m: m.text == "💬 chat with AI")
+@bot.message_handler(func=lambda m: m.text == "💬 Chat with AI")
 def menu_chat(message):
     user = get_user(message.from_user.id)
     if not user or user[4] == "none":
@@ -309,9 +309,7 @@ def menu_chat(message):
     )
 
 
-@bot.message_handler(func=lambda m: m.text == "👤 Personal account",
-                     )
-
+@bot.message_handler(func=lambda m: m.text == "👤 Personal account")
 def menu_profile(message):
     user = get_user(message.from_user.id)
     if not user:
