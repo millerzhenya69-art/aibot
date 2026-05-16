@@ -75,7 +75,7 @@ def build_contents(messages):
 
 # ── Общая функция запроса к Gemini ────────────────────────────────────────
 
-def ask_gemini_with_keys(messages, keys, model):
+def ask_gemini_with_keys(messages, keys, model, thinking=False):
     if not keys:
         raise Exception("NO_KEYS: ключи не настроены в переменных окружения")
 
@@ -86,12 +86,15 @@ def ask_gemini_with_keys(messages, keys, model):
     for key in shuffled:
         try:
             client = genai.Client(api_key=key)
+            cfg = genai_types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT
+            )
+            if thinking:
+                cfg.thinking_config = genai_types.ThinkingConfig(thinking_budget=8000)
             response = client.models.generate_content(
                 model=model,
                 contents=build_contents(messages),
-                config=genai_types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT
-                )
+                config=cfg
             )
             return safe_text(response.text)
         except Exception as e:
@@ -107,9 +110,9 @@ def ask_gemini_with_keys(messages, keys, model):
 # ── Бесплатная модель ─────────────────────────────────────────────────────
 
 def ask_gpt(messages):
-    return ask_gemini_with_keys(messages, GEMINI_FREE_KEYS, "gemini-2.0-flash-lite")
+    return ask_gemini_with_keys(messages, GEMINI_FREE_KEYS, "gemini-2.5-flash")
 
 # ── Платная модель ────────────────────────────────────────────────────────
 
 def ask_gemini(messages):
-    return ask_gemini_with_keys(messages, GEMINI_PRO_KEYS, "gemini-2.5-pro")
+    return ask_gemini_with_keys(messages, GEMINI_PRO_KEYS, "gemini-2.5-flash", thinking=True)
