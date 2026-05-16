@@ -4,7 +4,6 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
 import os
 import random
-import time
 import re
 from google import genai
 from google.genai import types as genai_types
@@ -12,12 +11,12 @@ from openai import OpenAI
 
 # ── Ключи ─────────────────────────────────────────────────────────────────
 
-OPENAI_KEYS = [
-    os.environ.get("OPENAI_API_KEY_1", ""),
-    os.environ.get("OPENAI_API_KEY_2", ""),
-    os.environ.get("OPENAI_API_KEY_3", ""),
+GROK_KEYS = [
+    os.environ.get("GROK_API_KEY_1", ""),
+    os.environ.get("GROK_API_KEY_2", ""),
+    os.environ.get("GROK_API_KEY_3", ""),
 ]
-OPENAI_KEYS = [k for k in OPENAI_KEYS if k]
+GROK_KEYS = [k for k in GROK_KEYS if k]
 
 GEMINI_KEYS = [
     os.environ.get("GEMINI_API_KEY_1", ""),
@@ -26,31 +25,31 @@ GEMINI_KEYS = [
 ]
 GEMINI_KEYS = [k for k in GEMINI_KEYS if k]
 
-# ── Системный промпт — скрываем происхождение ─────────────────────────────
+# ── Системный промпт ───────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = (
     "You are Elyon AI — a smart and helpful assistant. "
-    "Your name is Elyon. Never mention that you are ChatGPT, GPT, OpenAI, Gemini, Google, "
-    "or any other AI system. If asked who you are or what your name is, "
-    "always say you are Elyon AI, created by the Elyon team. "
-    "Be friendly, concise, and helpful."
+    "Your name is Elyon. Never mention that you are Grok, xAI, ChatGPT, GPT, OpenAI, "
+    "Gemini, Google, or any other AI system. "
+    "If asked who you are or what your name is, always say you are Elyon AI, "
+    "created by the Elyon team. Be friendly, concise, and helpful."
 )
 
-# Слова для замены в ответах (на случай если модель всё равно упомянет себя)
+# ── Замена упоминаний реальных AI в ответах ───────────────────────────────
+
 REPLACE_PAIRS = [
+    (r'\bGrok\b', 'Elyon'),
+    (r'\bxAI\b', 'Elyon team'),
     (r'\bChatGPT\b', 'Elyon'),
-    (r'\bGPT-4[^\s]*', 'Elyon'),
+    (r'\bGPT-[^\s]*', 'Elyon'),
     (r'\bGPT\b', 'Elyon'),
     (r'\bOpenAI\b', 'Elyon team'),
     (r'\bGemini\b', 'Elyon'),
     (r'\bGoogle DeepMind\b', 'Elyon team'),
     (r'\bGoogle\b', 'Elyon team'),
-    (r'\bI am an AI (made|created|developed|trained) by (OpenAI|Google)[^.]*\.',
-     'I am Elyon AI, created by the Elyon team.'),
 ]
 
 def mask_identity(text):
-    """Заменяем упоминания реальных AI на Elyon."""
     for pattern, replacement in REPLACE_PAIRS:
         text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
     return text
@@ -61,10 +60,9 @@ def safe_text(text):
     text = text.encode("utf-8", errors="ignore").decode("utf-8")
     return mask_identity(text)
 
-
 # ── Построение сообщений ──────────────────────────────────────────────────
 
-def build_openai_messages(messages):
+def build_grok_messages(messages):
     result = [{"role": "system", "content": SYSTEM_PROMPT}]
     for msg in messages:
         role = "assistant" if msg["role"] == "assistant" else "user"
@@ -83,62 +81,36 @@ def build_gemini_contents(messages):
         )
     return contents
 
-
-# ── Бесплатная модель: OpenAI ─────────────────────────────────────────────
+# ── Бесплатная модель: Grok ───────────────────────────────────────────────
 
 def ask_gpt(messages):
-    """Бесплатная модель: сначала Gemini flash-lite, при исчерпании — OpenAI резерв."""
-    # Сначала пробуем Gemini (бесплатно)
-    if GEMINI_KEYS:
-        keys = GEMINI_KEYS.copy()
-        random.shuffle(keys)
-        last_gemini_error = None
-        for key in keys:
-            try:
-                client = genai.Client(api_key=key)
-                response = client.models.generate_content(
-                    model="gemini-2.0-flash-lite",
-                    contents=build_gemini_contents(messages),
-                    config=genai_types.GenerateContentConfig(
-                        system_instruction=SYSTEM_PROMPT
-                    )
-                )
-                return safe_text(response.text)
-            except Exception as e:
-                error_text = str(e)
-                print(f"Gemini free ключ не сработал: {error_text[:100]}")
-                last_gemini_error = error_text
-                if "429" in error_text or "RESOURCE_EXHAUSTED" in error_text:
-                    continue
-                raise
+    if not GROK_KEYS:
+        raise Exception("NO_KEYS: не настроены GROK_API_KEY переменные окружения")
 
-    # Gemini исчерпан — пробуем OpenAI резерв
-    if OPENAI_KEYS:
-        keys = OPENAI_KEYS.copy()
-        random.shuffle(keys)
-        last_error = None
-        for key in keys:
-            try:
-                client = OpenAI(api_key=key)
-                response = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=build_openai_messages(messages),
-                    max_tokens=1000
-                )
-                return safe_text(response.choices[0].message.content)
-            except Exception as e:
-                error_text = str(e)
-                print(f"OpenAI резерв не сработал: {error_text[:100]}")
-                last_error = error_text
-                if "429" in error_text or "quota" in error_text.lower() or "rate" in error_text.lower():
-                    continue
-                raise
-        raise Exception(f"Все ключи исчерпаны. Попробуй через минуту.")
+    keys = GROK_KEYS.copy()
+    random.shuffle(keys)
+    last_error = None
 
-    raise Exception("Лимит запросов исчерпан. Попробуй через минуту.")
+    for key in keys:
+        try:
+            client = OpenAI(api_key=key, base_url="https://api.x.ai/v1")
+            response = client.chat.completions.create(
+                model="grok-3-mini",
+                messages=build_grok_messages(messages),
+                max_tokens=1000
+            )
+            return safe_text(response.choices[0].message.content)
+        except Exception as e:
+            error_text = str(e)
+            print(f"Grok ключ не сработал: {error_text[:100]}")
+            last_error = error_text
+            if "429" in error_text or "quota" in error_text.lower() or "rate" in error_text.lower():
+                continue
+            raise
 
+    raise Exception(f"Все Grok ключи исчерпаны. Попробуй через минуту.")
 
-# ── Платная модель: Gemini (думающая) ─────────────────────────────────────
+# ── Платная модель: Gemini ────────────────────────────────────────────────
 
 def ask_gemini(messages):
     if not GEMINI_KEYS:
@@ -146,8 +118,8 @@ def ask_gemini(messages):
 
     keys = GEMINI_KEYS.copy()
     random.shuffle(keys)
-
     last_error = None
+
     for key in keys:
         try:
             client = genai.Client(api_key=key)
@@ -164,7 +136,7 @@ def ask_gemini(messages):
             print(f"Gemini ключ не сработал: {error_text[:100]}")
             last_error = error_text
             if "429" in error_text or "RESOURCE_EXHAUSTED" in error_text:
-                continue  # пробуем следующий ключ
-            raise  # другая ошибка — сразу пробрасываем
+                continue
+            raise
 
-    raise Exception(f"Все Gemini ключи исчерпаны. Попробуй через минуту.\n{last_error[:200]}")
+    raise Exception(f"Все Gemini ключи исчерпаны. Попробуй через минуту.")
