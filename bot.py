@@ -5,15 +5,18 @@ from datetime import datetime, timedelta
 import logging
 import requests
 
-from database import init_db, get_user, register_user, set_ai_model
-from database import set_subscription, has_active_sub, add_message, get_history, clear_history
+from database import (init_db, get_user, register_user, set_ai_model,
+                      set_subscription, has_active_sub, add_message,
+                      get_history, clear_history, get_balance, spend_balance,
+                      add_balance, get_referral_count)
 from ai_clients import ask_gpt, ask_gemini
 
 logging.basicConfig(level=logging.CRITICAL)
 
 TOKEN        = os.environ.get("BOT_TOKEN", "")
 OWNER_ID     = int(os.environ.get("OWNER_ID", "7113603197"))
-CRYPTO_TOKEN = os.environ.get("CRYPTO_TOKEN", "582036:AAck17CmI9OE37KMCYiHrpRyF8Qul14due6")
+CRYPTO_TOKEN = os.environ.get("CRYPTO_TOKEN", "")
+BOT_USERNAME = os.environ.get("BOT_USERNAME", "ElyonAI_bot")  # имя бота без @
 
 import database
 database.OWNER_ID = OWNER_ID
@@ -21,26 +24,38 @@ database.OWNER_ID = OWNER_ID
 bot = telebot.TeleBot(TOKEN, threaded=False)
 init_db()
 
+# ── Цены ──────────────────────────────────────────────────────────────────
+
 PRICES = {
-    "month":    {"stars": 30,  "label": "30 days — 30 stars",   "days": 30},
-    "halfyear": {"stars": 100,  "label": "six months — 60 stars",   "days": 180},
-    "forever":  {"stars": 250, "label": "forever — 120 stars", "days": 0},
+    "month":    {"stars": 30,  "label": "30 days — 30 ⭐",   "days": 30,  "rub": 50},
+    "halfyear": {"stars": 60,  "label": "6 months — 60 ⭐",  "days": 180, "rub": 182},
+    "forever":  {"stars": 120, "label": "Forever — 120 ⭐",  "days": 0,   "rub": 429},
 }
 
 CRYPTO_PRICES = {
-    "month":    {"amount": "0.55", "label": "30 days — 50 rub."},
-    "halfyear": {"amount": "1.10", "label": "six months — 182 rub."},
-    "forever":  {"amount": "2.20", "label": "forever — 429 rub."},
+    "month":    {"amount": "0.55", "label": "30 days — 50 ₽"},
+    "halfyear": {"amount": "1.10", "label": "6 months — 182 ₽"},
+    "forever":  {"amount": "2.20", "label": "Forever — 429 ₽"},
+}
+
+VIRTUAL_PRICES = {
+    "month":    {"rub": 50,  "label": "30 days — 50 монет"},
+    "halfyear": {"rub": 182, "label": "6 months — 182 монеты"},
+    "forever":  {"rub": 429, "label": "Forever — 429 монет"},
 }
 
 
-# ==============================
-# Вспомогательные функции
-# ==============================
+# ── Клавиатуры ────────────────────────────────────────────────────────────
 
-def back_button():
-    markup = types.InlineKeyboardMarkup()
-    markup.add(types.InlineKeyboardButton("◀️ back", callback_data="back_start"))
+def main_menu_keyboard():
+    """Постоянная нижняя клавиатура."""
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    markup.add(
+        types.KeyboardButton("💬 Chat with AI"),
+        types.KeyboardButton("👤 Personal account"),
+        types.KeyboardButton("🆓 Elyon Core"),
+        types.KeyboardButton("⭐ Elyon Nova"),
+    )
     return markup
 
 
@@ -52,45 +67,55 @@ def show_start(chat_id):
     )
     bot.send_message(
         chat_id,
-        "👋 Hello!\n\n"
-        "I'm Elyon AI:\n\n"
-        "🆓 *Elyon Core* — free\n"
-        "⭐ *Elyon Nova* — by subscription\n\n"
-        "select version:",
+        "👋 *Welcome to Elyon AI!*\n\n"
+        "🆓 *Elyon Core* — free, fast answers\n"
+        "⭐ *Elyon Nova* — pro, deep thinking\n\n"
+        "Choose your version:",
         parse_mode="Markdown",
         reply_markup=markup
     )
 
 
-def set_main_menu(chat_id):
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add(
-        types.KeyboardButton("💬 Chat with AI"),
-        types.KeyboardButton("👤 Personal account")
-    )
-    bot.send_message(chat_id, "Select chapter:", reply_markup=markup)
-
-
 def show_payment_options(chat_id, user_id):
+    balance = get_balance(user_id)
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
-        types.InlineKeyboardButton("⭐ 30 days — 30 stars",   callback_data="pay_stars_month"),
-        types.InlineKeyboardButton("💳 30 days — 50 руб.",    callback_data="pay_crypto_month"),
-        types.InlineKeyboardButton("⭐ six months — 60 з",   callback_data="pay_stars_halfyear"),
-        types.InlineKeyboardButton("💳 six months — 100 руб.",   callback_data="pay_crypto_halfyear"),
-        types.InlineKeyboardButton("⭐ forever — 120 звёзд", callback_data="pay_stars_forever"),
-        types.InlineKeyboardButton("💳 forever — 200 руб.",  callback_data="pay_crypto_forever"),
+        types.InlineKeyboardButton("⭐ 30 days — 30 stars",    callback_data="pay_stars_month"),
+        types.InlineKeyboardButton("💳 30 days — 50 ₽",        callback_data="pay_crypto_month"),
+        types.InlineKeyboardButton("⭐ 6 months — 60 stars",   callback_data="pay_stars_halfyear"),
+        types.InlineKeyboardButton("💳 6 months — 182 ₽",      callback_data="pay_crypto_halfyear"),
+        types.InlineKeyboardButton("⭐ Forever — 120 stars",   callback_data="pay_stars_forever"),
+        types.InlineKeyboardButton("💳 Forever — 429 ₽",       callback_data="pay_crypto_forever"),
     )
-    markup.add(types.InlineKeyboardButton("◀️ back", callback_data="back_start"))
+    if balance >= 50:
+        markup.add(
+            types.InlineKeyboardButton(f"🪙 Pay with coins (balance: {balance})", callback_data="pay_virtual_menu")
+        )
+    markup.add(types.InlineKeyboardButton("◀️ Back", callback_data="back_start"))
     bot.send_message(
         chat_id,
-        "⭐ *Pro AI version*\n\n"
-        "Select your subscription type and payment method:\n\n"
-        "⭐ — Telegram Stars\n"
-        "💳 — CryptoBot (rub/USDT)\n\n"
-        "🔹 30 days\n"
-        "🔹 six months\n"
-        "🔹 forever",
+        "⭐ *Elyon Nova — Subscription*\n\n"
+        "⭐ Telegram Stars\n"
+        "💳 CryptoBot (₽/USDT)\n"
+        + (f"🪙 Virtual coins (your balance: *{balance}*)\n" if balance >= 50 else "") +
+        "\nChoose plan and payment method:",
+        parse_mode="Markdown",
+        reply_markup=markup
+    )
+
+
+def show_virtual_payment(chat_id, user_id):
+    balance = get_balance(user_id)
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    for plan, data in VIRTUAL_PRICES.items():
+        if balance >= data["rub"]:
+            markup.add(types.InlineKeyboardButton(
+                f"🪙 {data['label']}", callback_data=f"pay_virtual_{plan}"
+            ))
+    markup.add(types.InlineKeyboardButton("◀️ Back", callback_data="choose_pro"))
+    bot.send_message(
+        chat_id,
+        f"🪙 *Pay with virtual coins*\n\nYour balance: *{balance}* coins\n\nChoose plan:",
         parse_mode="Markdown",
         reply_markup=markup
     )
@@ -103,21 +128,22 @@ def activate_subscription(user_id, plan, chat_id):
     else:
         until = datetime.now() + timedelta(days=price["days"])
         set_subscription(user_id, plan, until.strftime("%d.%m.%Y %H:%M"))
-
     set_ai_model(user_id, "gemini")
     clear_history(user_id)
-
-    markup = back_button()
     bot.send_message(
         chat_id,
-        f"✅ subscription activated!\n"
-        f"Rate: *{price['label']}*\n\n"
-        "Your select *Elyon Nova*.\n"
-        "Now you can use Elyon Nova.",
+        f"✅ *Subscription activated!*\n"
+        f"Plan: *{price['label']}*\n\n"
+        "You are now using *Elyon Nova* 🌟",
         parse_mode="Markdown",
-        reply_markup=markup
+        reply_markup=main_menu_keyboard()
     )
-    set_main_menu(chat_id)
+    bot.send_message(
+        OWNER_ID,
+        f"💰 New subscription!\n"
+        f"User: @{bot.get_chat(user_id).username or 'no username'}\n"
+        f"ID: {user_id}\nPlan: {price['label']}"
+    )
 
 
 def create_crypto_invoice(amount, user_id, plan):
@@ -141,26 +167,37 @@ def create_crypto_invoice(amount, user_id, plan):
     return None
 
 
-# ==============================
-# /start
-# ==============================
+# ── /start ────────────────────────────────────────────────────────────────
 
 @bot.message_handler(commands=["start"])
 def start(message):
-    register_user(message.from_user.id, message.from_user.username or "")
+    args = message.text.split()
+    referred_by = None
+    if len(args) > 1:
+        try:
+            referred_by = int(args[1])
+        except:
+            pass
+    is_new = register_user(message.from_user.id, message.from_user.username or "", referred_by)
+    if is_new and referred_by:
+        try:
+            bot.send_message(referred_by, f"🎉 Someone joined via your referral link! +10 coins added to your balance.")
+        except:
+            pass
+    bot.send_message(message.chat.id, "🔄 Loading...", reply_markup=main_menu_keyboard())
     show_start(message.chat.id)
 
 
-# ==============================
-# Inline кнопки
-# ==============================
+# ── Inline кнопки ─────────────────────────────────────────────────────────
 
 @bot.callback_query_handler(func=lambda c: True)
 def handle_callback(call):
     user_id = call.from_user.id
     chat_id = call.message.chat.id
-
-    bot.delete_message(chat_id, call.message.message_id)
+    try:
+        bot.delete_message(chat_id, call.message.message_id)
+    except:
+        pass
 
     if call.data == "back_start":
         show_start(chat_id)
@@ -170,12 +207,10 @@ def handle_callback(call):
         clear_history(user_id)
         bot.send_message(
             chat_id,
-            "✅ You select *Elyon Core*.\n\n"
-            "Now you can use Elyon Core.",
+            "✅ *Elyon Core* activated!\n\nFast answers, always free. Start chatting!",
             parse_mode="Markdown",
-            reply_markup=back_button()
+            reply_markup=main_menu_keyboard()
         )
-        set_main_menu(chat_id)
 
     elif call.data == "choose_pro":
         if has_active_sub(user_id):
@@ -183,22 +218,31 @@ def handle_callback(call):
             clear_history(user_id)
             bot.send_message(
                 chat_id,
-                "✅ You select *Elyon Nova*.\n\n"
-                "Now you can use Elyon Core.",
+                "✅ *Elyon Nova* activated!\n\nDeep thinking mode. Start chatting!",
                 parse_mode="Markdown",
-                reply_markup=back_button()
+                reply_markup=main_menu_keyboard()
             )
-            set_main_menu(chat_id)
         else:
             show_payment_options(chat_id, user_id)
+
+    elif call.data == "pay_virtual_menu":
+        show_virtual_payment(chat_id, user_id)
+
+    elif call.data.startswith("pay_virtual_"):
+        plan = call.data.replace("pay_virtual_", "")
+        cost = VIRTUAL_PRICES[plan]["rub"]
+        if spend_balance(user_id, cost):
+            activate_subscription(user_id, plan, chat_id)
+        else:
+            bot.send_message(chat_id, "❌ Not enough coins.", reply_markup=main_menu_keyboard())
 
     elif call.data.startswith("pay_stars_"):
         plan = call.data.replace("pay_stars_", "")
         price = PRICES[plan]
         bot.send_invoice(
             chat_id,
-            title=f"Pro AI version — {price['label']}",
-            description="access to Elyon Nova",
+            title=f"Elyon Nova — {price['label']}",
+            description="Access to Elyon Nova (deep thinking AI)",
             invoice_payload=f"pro_{plan}",
             provider_token="",
             currency="XTR",
@@ -211,28 +255,19 @@ def handle_callback(call):
         invoice = create_crypto_invoice(price["amount"], user_id, plan)
         if invoice:
             markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton(
-                f"💳 Pay {price['label']}", url=invoice["pay_url"]
-            ))
-            markup.add(types.InlineKeyboardButton("◀️ back", callback_data="back_start"))
+            markup.add(types.InlineKeyboardButton(f"💳 Pay {price['label']}", url=invoice["pay_url"]))
+            markup.add(types.InlineKeyboardButton("◀️ Back", callback_data="back_start"))
             bot.send_message(
                 chat_id,
-                f"payment via CryptoBot:\n*{price['label']}*\n\n"
-                "After payment, click /check",
+                f"💳 *Payment via CryptoBot*\n*{price['label']}*\n\nAfter payment press /check",
                 parse_mode="Markdown",
                 reply_markup=markup
             )
         else:
-            bot.send_message(
-                chat_id,
-                "❌ Error creating payment. Try again later..",
-                reply_markup=back_button()
-            )
+            bot.send_message(chat_id, "❌ Payment error. Try again later.")
 
 
-# ==============================
-# Оплата звёздами
-# ==============================
+# ── Оплата звёздами ───────────────────────────────────────────────────────
 
 @bot.pre_checkout_query_handler(func=lambda q: True)
 def pre_checkout(query):
@@ -244,18 +279,9 @@ def payment_success(message):
     user_id = message.from_user.id
     plan = message.successful_payment.invoice_payload.replace("pro_", "")
     activate_subscription(user_id, plan, message.chat.id)
-    bot.send_message(
-        OWNER_ID,
-        f"💰 New payment in stars!\n"
-        f"User: @{message.from_user.username or 'without username'}\n"
-        f"ID: {user_id}\n"
-        f"Plan: {PRICES[plan]['label']}"
-    )
 
 
-# ==============================
-# Проверка оплаты CryptoBot
-# ==============================
+# ── Проверка CryptoBot ────────────────────────────────────────────────────
 
 @bot.message_handler(commands=["check"])
 def check_crypto_payment(message):
@@ -273,27 +299,14 @@ def check_crypto_payment(message):
                 if payload.startswith(str(user_id) + "_"):
                     plan = payload.split("_")[1]
                     activate_subscription(user_id, plan, message.chat.id)
-                    bot.send_message(
-                        OWNER_ID,
-                        f"💰 Payment CryptoBot!\n"
-                        f"User: @{message.from_user.username or 'without username'}\n"
-                        f"ID: {user_id}\n"
-                        f"Plan: {plan}"
-                    )
                     return
-        bot.send_message(
-            message.chat.id,
-            "❌ Payment not found. Try again in a minute..",
-            reply_markup=back_button()
-        )
+        bot.send_message(message.chat.id, "❌ Payment not found. Try again in a minute.")
     except Exception as e:
         print("Check error:", e)
         bot.send_message(message.chat.id, "❌ Payment verification error.")
 
 
-# ==============================
-# Кнопки нижнего меню
-# ==============================
+# ── Нижнее меню ───────────────────────────────────────────────────────────
 
 @bot.message_handler(func=lambda m: m.text == "💬 Chat with AI")
 def menu_chat(message):
@@ -304,8 +317,8 @@ def menu_chat(message):
     model = "🆓 Elyon Core" if user[4] == "gpt" else "⭐ Elyon Nova"
     bot.send_message(
         message.chat.id,
-        f"Current model: {model}\n\nWrite a message directly in the chat!",
-        reply_markup=back_button()
+        f"Current model: *{model}*\n\nWrite your message!",
+        parse_mode="Markdown"
     )
 
 
@@ -314,35 +327,65 @@ def menu_profile(message):
     user = get_user(message.from_user.id)
     if not user:
         return
-
+    user_id   = user[0]
     sub_type  = user[5]
     sub_until = user[6]
+    balance   = get_balance(user_id)
+    ref_count = get_referral_count(user_id)
+    ref_link  = f"https://t.me/{BOT_USERNAME}?start={user_id}"
 
     if sub_type == "none":
-        sub_info = "❌ no subscription"
+        sub_info = "❌ No subscription"
     elif sub_type == "forever":
-        sub_info = "♾ forever"
+        sub_info = "♾️ Forever"
     else:
-        labels = {"month": "30 days", "halfyear": "six months"}
-        sub_info = f"✅ {labels.get(sub_type, sub_type)} (до {sub_until})"
+        labels = {"month": "30 days", "halfyear": "6 months"}
+        sub_info = f"✅ {labels.get(sub_type, sub_type)} (until {sub_until})"
 
     role_emoji = "👑" if user[3] == "owner" else "👤"
 
     bot.send_message(
         message.chat.id,
-        f"👤 *Personal account*\n\n"
+        f"👤 *Personal Account*\n\n"
         f"Username: @{user[1] or 'not specified'}\n"
-        f"Date of registration: {user[2]}\n"
+        f"Registered: {user[2]}\n"
         f"Role: {role_emoji} {user[3]}\n"
-        f"Subscription: {sub_info}",
-        parse_mode="Markdown",
-        reply_markup=back_button()
+        f"Subscription: {sub_info}\n\n"
+        f"🪙 *Coins balance:* {balance}\n"
+        f"👥 *Referrals:* {ref_count}\n\n"
+        f"🔗 *Your referral link:*\n`{ref_link}`\n\n"
+        f"_Each friend who joins via your link gives you +10 coins_",
+        parse_mode="Markdown"
     )
 
 
-# ==============================
-# Сообщения к AI
-# ==============================
+@bot.message_handler(func=lambda m: m.text == "🆓 Elyon Core")
+def switch_free(message):
+    set_ai_model(message.from_user.id, "gpt")
+    clear_history(message.from_user.id)
+    bot.send_message(
+        message.chat.id,
+        "✅ Switched to *Elyon Core*\n\nFast free AI. Start chatting!",
+        parse_mode="Markdown"
+    )
+
+
+@bot.message_handler(func=lambda m: m.text == "⭐ Elyon Nova")
+def switch_pro(message):
+    user_id = message.from_user.id
+    if has_active_sub(user_id):
+        set_ai_model(user_id, "gemini")
+        clear_history(user_id)
+        bot.send_message(
+            message.chat.id,
+            "✅ Switched to *Elyon Nova*\n\nDeep thinking AI. Start chatting!",
+            parse_mode="Markdown"
+        )
+    else:
+        show_payment_options(message.chat.id, user_id)
+
+
+# ── AI сообщения ──────────────────────────────────────────────────────────
 
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
@@ -360,11 +403,7 @@ def handle_message(message):
         return
 
     if ai_model == "gemini" and not has_active_sub(user_id):
-        bot.send_message(
-            message.chat.id,
-            "⚠️ Your subscription has expired. Choose a plan.:",
-            reply_markup=back_button()
-        )
+        bot.send_message(message.chat.id, "⚠️ Subscription expired.")
         show_payment_options(message.chat.id, user_id)
         return
 
@@ -373,48 +412,27 @@ def handle_message(message):
     history = get_history(user_id)
 
     try:
-        if ai_model == "gpt":
-            reply = ask_gpt(history)
-        else:
-            reply = ask_gemini(history)
-
+        reply = ask_gpt(history) if ai_model == "gpt" else ask_gemini(history)
         add_message(user_id, "assistant", reply)
-        bot.send_message(message.chat.id, reply, reply_markup=back_button())
+        bot.send_message(message.chat.id, reply)
 
     except Exception as e:
         error_text = str(e)
         print("AI error:", e)
-
         if "429" in error_text or "RESOURCE_EXHAUSTED" in error_text:
-            bot.send_message(
-                message.chat.id,
-                "⏳ Too many requests. Try again in a minute..",
-                reply_markup=back_button()
-            )
+            bot.send_message(message.chat.id, "⏳ Too many requests. Try again in a minute.")
         elif "404" in error_text or "NOT_FOUND" in error_text:
-            bot.send_message(
-                message.chat.id,
-                "❌ The model is unavailable. Please contact the administrator..",
-                reply_markup=back_button()
-            )
+            bot.send_message(message.chat.id, "❌ Model unavailable. Contact administrator.")
         else:
-            bot.send_message(
-                message.chat.id,
-                f"❌ {error_text[:300]}",
-                reply_markup=back_button()
-            )
+            bot.send_message(message.chat.id, f"❌ {error_text[:200]}")
 
 
-# ==============================
-# Запуск
-# ==============================
+# ── Запуск ────────────────────────────────────────────────────────────────
 
-
-# Вставь это:
 try:
     print("bot is running...")
     bot.infinity_polling(timeout=20, long_polling_timeout=5)
 except KeyboardInterrupt:
-    print("Бот остановлен вручную.")
+    print("Stopped.")
 except Exception as e:
-    print("Ошибка:", e)
+    print("Error:", e)
