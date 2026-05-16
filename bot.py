@@ -11,9 +11,10 @@ from ai_clients import ask_gpt, ask_gemini
 
 logging.basicConfig(level=logging.CRITICAL)
 
-TOKEN        = os.environ.get("BOT_TOKEN")
-OWNER_ID     = int(os.environ.get("OWNER_ID"))
-CRYPTO_TOKEN = os.environ.get("CRYPTO_TOKEN")
+TOKEN        = os.environ.get("BOT_TOKEN", "")
+OWNER_ID     = int(os.environ.get("OWNER_ID", "7113603197"))
+CRYPTO_TOKEN = os.environ.get("CRYPTO_TOKEN", "582036:AAck17CmI9OE37KMCYiHrpRyF8Qul14due6")
+
 import database
 database.OWNER_ID = OWNER_ID
 
@@ -399,7 +400,7 @@ def handle_message(message):
         else:
             bot.send_message(
                 message.chat.id,
-                f"❌ Request error:\n{error_text[:300]}",
+                f"❌ {error_text[:300]}",
                 reply_markup=back_button()
             )
 
