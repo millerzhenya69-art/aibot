@@ -18,7 +18,7 @@ CRYPTO_TOKEN = os.environ.get("CRYPTO_TOKEN", "582036:AAck17CmI9OE37KMCYiHrpRyF8
 import database
 database.OWNER_ID = OWNER_ID
 
-bot = telebot.TeleBot(TOKEN)
+bot = telebot.TeleBot(TOKEN, threaded=False)
 init_db()
 
 PRICES = {
@@ -413,7 +413,7 @@ def handle_message(message):
 # Вставь это:
 try:
     print("bot is running...")
-    bot.infinity_polling(timeout=20, long_polling_timeout=5, num_threads=1)
+    bot.infinity_polling(timeout=20, long_polling_timeout=5)
 except KeyboardInterrupt:
     print("Бот остановлен вручную.")
 except Exception as e:
