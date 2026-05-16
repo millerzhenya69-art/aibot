@@ -45,7 +45,7 @@ def safe_text(text):
 
 def ask_gpt(messages, attempt=0):
     if attempt >= max(len(GEMINI_KEYS), 1):
-        raise Exception("Все API ключи исчерпаны")
+        raise Exception("Лимит запросов исчерпан. Попробуй через минуту.")
 
     try:
         client = get_client(attempt)
@@ -59,6 +59,8 @@ def ask_gpt(messages, attempt=0):
         error_text = str(e)
         if "429" in error_text or "RESOURCE_EXHAUSTED" in error_text:
             print(f"Ключ исчерпан, попытка {attempt + 1} из {len(GEMINI_KEYS)}")
+            import time
+            time.sleep(2)
             return ask_gpt(messages, attempt + 1)
         raise
 
