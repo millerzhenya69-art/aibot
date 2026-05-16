@@ -413,7 +413,7 @@ def handle_message(message):
 # Вставь это:
 try:
     print("bot is running...")
-    bot.infinity_polling(timeout=20, long_polling_timeout=5)
+    bot.infinity_polling(timeout=20, long_polling_timeout=5, num_threads=1)
 except KeyboardInterrupt:
     print("Бот остановлен вручную.")
 except Exception as e:
