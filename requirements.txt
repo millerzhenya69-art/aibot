@@ -2,3 +2,5 @@ pyTelegramBotAPI
 google-genai
 openai
 requests
+flask
+flask-cors
