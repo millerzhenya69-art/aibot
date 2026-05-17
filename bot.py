@@ -28,8 +28,8 @@ init_db()
 
 PRICES = {
     "month":    {"stars": 30,  "label": "30 days — 30 ⭐",   "days": 30,  "rub": 50},
-    "halfyear": {"stars": 60,  "label": "6 months — 60 ⭐",  "days": 180, "rub": 182},
-    "forever":  {"stars": 120, "label": "Forever — 120 ⭐",  "days": 0,   "rub": 429},
+    "halfyear": {"stars": 60,  "label": "6 months — 60 ⭐",  "days": 180, "rub": 100},
+    "forever":  {"stars": 120, "label": "Forever — 120 ⭐",  "days": 0,   "rub": 200},
 }
 
 CRYPTO_PRICES = {
@@ -326,6 +326,9 @@ def menu_chat(message):
 def menu_profile(message):
     user = get_user(message.from_user.id)
     if not user:
+        register_user(message.from_user.id, message.from_user.username or "")
+        user = get_user(message.from_user.id)
+    if not user:
         return
     user_id   = user[0]
     sub_type  = user[5]
@@ -387,8 +390,14 @@ def switch_pro(message):
 
 # ── AI сообщения ──────────────────────────────────────────────────────────
 
+MENU_TEXTS = {"💬 Chat with AI", "👤 Personal account", "🆓 Elyon Core", "⭐ Elyon Nova"}
+
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
+    # Игнорируем если это текст кнопки меню — он обрабатывается своим хендлером
+    if message.text in MENU_TEXTS:
+        return
+
     user_id = message.from_user.id
     user = get_user(user_id)
 
