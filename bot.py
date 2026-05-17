@@ -446,14 +446,27 @@ def handle_message(message):
 # ── Flask API для Mini App ────────────────────────────────────────────────
 
 app = Flask(__name__)
-CORS(app, origins=[
-    "https://elyon-miniapp.vercel.app",
-    "https://*.vercel.app",
-    "http://localhost:3000"
-])
+CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=False)
 
-@app.route("/api/chat", methods=["POST"])
+@app.after_request
+def after_request(response):
+    response.headers.add("Access-Control-Allow-Origin", "*")
+    response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization")
+    response.headers.add("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+    return response
+
+@app.route("/api/chat", methods=["OPTIONS"])
+def api_chat_options():
+    return "", 204
+
+@app.route("/api/user/<int:user_id>", methods=["OPTIONS"])
+def api_user_options(user_id):
+    return "", 204
+
+@app.route("/api/chat", methods=["POST", "OPTIONS"])
 def api_chat():
+    if request.method == "OPTIONS":
+        return "", 204
     try:
         data = request.json
         user_id = data.get("user_id")
