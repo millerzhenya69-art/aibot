@@ -347,16 +347,15 @@ def menu_profile(message):
 
     bot.send_message(
         message.chat.id,
-        f"👤 *Personal Account*\n\n"
+        f"👤 Personal Account\n\n"
         f"Username: @{user[1] or 'not specified'}\n"
         f"Registered: {user[2]}\n"
         f"Role: {role_emoji} {user[3]}\n"
         f"Subscription: {sub_info}\n\n"
-        f"🪙 *Coins balance:* {balance}\n"
-        f"👥 *Referrals:* {ref_count}\n\n"
-        f"🔗 *Your referral link:*\n`{ref_link}`\n\n"
-        f"_Each friend who joins via your link gives you +10 coins_",
-        parse_mode="Markdown"
+        f"🪙 Coins balance: {balance}\n"
+        f"👥 Referrals: {ref_count}\n\n"
+        f"🔗 Your referral link:\n{ref_link}\n\n"
+        f"Each friend who joins gives you +10 coins"
     )
 
 
