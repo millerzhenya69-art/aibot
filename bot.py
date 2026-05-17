@@ -4,6 +4,9 @@ from telebot import types
 from datetime import datetime, timedelta
 import logging
 import requests
+import threading
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 
 from database import (init_db, get_user, register_user, set_ai_model,
                       set_subscription, has_active_sub, add_message,
@@ -28,8 +31,8 @@ init_db()
 
 PRICES = {
     "month":    {"stars": 30,  "label": "30 days — 30 ⭐",   "days": 30,  "rub": 50},
-    "halfyear": {"stars": 60,  "label": "6 months — 60 ⭐",  "days": 180, "rub": 100},
-    "forever":  {"stars": 120, "label": "Forever — 120 ⭐",  "days": 0,   "rub": 200},
+    "halfyear": {"stars": 60,  "label": "6 months — 60 ⭐",  "days": 180, "rub": 182},
+    "forever":  {"stars": 120, "label": "Forever — 120 ⭐",  "days": 0,   "rub": 429},
 }
 
 CRYPTO_PRICES = {
@@ -440,10 +443,68 @@ def handle_message(message):
             bot.send_message(message.chat.id, f"❌ {error_text[:200]}")
 
 
+# ── Flask API для Mini App ────────────────────────────────────────────────
+
+app = Flask(__name__)
+CORS(app)
+
+@app.route("/api/chat", methods=["POST"])
+def api_chat():
+    try:
+        data = request.json
+        user_id = data.get("user_id")
+        model   = data.get("model", "gpt")
+        messages = data.get("messages", [])
+
+        if not user_id or not messages:
+            return jsonify({"error": "Missing user_id or messages"}), 400
+
+        if model == "gemini":
+            if not has_active_sub(user_id):
+                return jsonify({"error": "No active subscription"}), 403
+            reply = ask_gemini(messages)
+        else:
+            reply = ask_gpt(messages)
+
+        return jsonify({"reply": reply})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/user/<int:user_id>", methods=["GET"])
+def api_user(user_id):
+    user = get_user(user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    return jsonify({
+        "user_id": user[0],
+        "username": user[1],
+        "role": user[3],
+        "ai_model": user[4],
+        "sub_type": user[5],
+        "sub_until": user[6],
+        "balance": get_balance(user_id),
+        "referrals": get_referral_count(user_id),
+        "has_sub": has_active_sub(user_id)
+    })
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok"})
+
+
 # ── Запуск ────────────────────────────────────────────────────────────────
+
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port, debug=False)
 
 try:
     print("bot is running...")
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
     bot.infinity_polling(timeout=20, long_polling_timeout=5)
 except KeyboardInterrupt:
     print("Stopped.")
