@@ -324,10 +324,8 @@ def menu_chat(message):
 
 @bot.message_handler(func=lambda m: m.text == "👤 Personal account")
 def menu_profile(message):
+    register_user(message.from_user.id, message.from_user.username or "")
     user = get_user(message.from_user.id)
-    if not user:
-        register_user(message.from_user.id, message.from_user.username or "")
-        user = get_user(message.from_user.id)
     if not user:
         return
     user_id   = user[0]
@@ -364,6 +362,7 @@ def menu_profile(message):
 
 @bot.message_handler(func=lambda m: m.text == "🆓 Elyon Core")
 def switch_free(message):
+    register_user(message.from_user.id, message.from_user.username or "")
     set_ai_model(message.from_user.id, "gpt")
     clear_history(message.from_user.id)
     bot.send_message(
@@ -375,6 +374,7 @@ def switch_free(message):
 
 @bot.message_handler(func=lambda m: m.text == "⭐ Elyon Nova")
 def switch_pro(message):
+    register_user(message.from_user.id, message.from_user.username or "")
     user_id = message.from_user.id
     if has_active_sub(user_id):
         set_ai_model(user_id, "gemini")
@@ -392,9 +392,14 @@ def switch_pro(message):
 
 MENU_TEXTS = {"💬 Chat with AI", "👤 Personal account", "🆓 Elyon Core", "⭐ Elyon Nova"}
 
+def ensure_registered(message):
+    """Регистрирует пользователя если его нет в БД."""
+    register_user(message.from_user.id, message.from_user.username or "")
+
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
-    # Игнорируем если это текст кнопки меню — он обрабатывается своим хендлером
+    ensure_registered(message)
+
     if message.text in MENU_TEXTS:
         return
 
