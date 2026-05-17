@@ -446,7 +446,11 @@ def handle_message(message):
 # ── Flask API для Mini App ────────────────────────────────────────────────
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, origins=[
+    "https://elyon-miniapp.vercel.app",
+    "https://*.vercel.app",
+    "http://localhost:3000"
+])
 
 @app.route("/api/chat", methods=["POST"])
 def api_chat():
