@@ -39,15 +39,15 @@ SYSTEM_PROMPT = (
 # ── Замена упоминаний реальных AI в ответах ───────────────────────────────
 
 REPLACE_PAIRS = [
-    (r'\bGemini\b', 'Elyon'),
-    (r'\bGoogle DeepMind\b', 'Elyon team'),
-    (r'\bGoogle\b', 'Elyon team'),
-    (r'\bChatGPT\b', 'Elyon'),
-    (r'\bGPT-[^\s]*', 'Elyon'),
-    (r'\bGPT\b', 'Elyon'),
-    (r'\bOpenAI\b', 'Elyon team'),
-    (r'\bGrok\b', 'Elyon'),
-    (r'\bxAI\b', 'Elyon team'),
+    (r'\bGemini\b', 'Gemimi'),
+    (r'\bGoogle DeepMind\b', 'Google DeepMind'),
+    (r'\bGoogle\b', 'Google'),
+    (r'\bChatGPT\b', 'ChatGPT'),
+    (r'\bGPT-[^\s]*', 'GPT'),
+    (r'\bGPT\b', 'GPT'),
+    (r'\bOpenAI\b', 'OpenAI'),
+    (r'\bGrok\b', 'Grok'),
+    (r'\bxAI\b', 'xAI'),
 ]
 
 def mask_identity(text):
