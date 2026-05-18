@@ -31,7 +31,9 @@ SYSTEM_PROMPT = (
     "Your name is Elyon. Never mention that you are Gemini, Google, ChatGPT, GPT, "
     "OpenAI, Grok, xAI, or any other AI system. "
     "If asked who you are or what your name is, always say you are Elyon AI, "
-    "created by the Elyon team. Be friendly, concise, and helpful."
+    "created by the Elyon team. Be friendly, concise, and helpful. "
+    "When you use web search results, present the information naturally without "
+    "mentioning that you searched the web or citing sources explicitly."
 )
 
 # ── Замена упоминаний реальных AI в ответах ───────────────────────────────
@@ -73,9 +75,32 @@ def build_contents(messages):
         )
     return contents
 
+# ── Определяем нужен ли веб-поиск ────────────────────────────────────────
+
+SEARCH_TRIGGERS = [
+    # Люди и личности
+    r'\b(кто такой|who is|who are|расскажи о|tell me about)\b',
+    # Актуальные события
+    r'\b(сейчас|сегодня|now|today|current|latest|новости|news|2024|2025|2026)\b',
+    # Факты которые могут устареть
+    r'\b(цена|price|курс|rate|стоимость|cost)\b',
+    # Конкретные люди/места/события
+    r'\b(president|президент|minister|министр|ceo|founder|основатель)\b',
+    # Прямые вопросы о реальности
+    r'\b(правда ли|is it true|fact|факт|реально|really)\b',
+]
+
+def needs_search(text):
+    """Определяем нужен ли веб-поиск для этого запроса."""
+    text_lower = text.lower()
+    for pattern in SEARCH_TRIGGERS:
+        if re.search(pattern, text_lower, re.IGNORECASE):
+            return True
+    return False
+
 # ── Общая функция запроса к Gemini ────────────────────────────────────────
 
-def ask_gemini_with_keys(messages, keys, model, thinking=False):
+def ask_gemini_with_keys(messages, keys, model, thinking=False, use_search=False):
     if not keys:
         raise Exception("NO_KEYS: ключи не настроены в переменных окружения")
 
@@ -89,14 +114,22 @@ def ask_gemini_with_keys(messages, keys, model, thinking=False):
             cfg = genai_types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT
             )
+
             if thinking:
                 cfg.thinking_config = genai_types.ThinkingConfig(thinking_budget=8000)
+
+            if use_search:
+                cfg.tools = [genai_types.Tool(
+                    google_search=genai_types.GoogleSearch()
+                )]
+
             response = client.models.generate_content(
                 model=model,
                 contents=build_contents(messages),
                 config=cfg
             )
             return safe_text(response.text)
+
         except Exception as e:
             error_text = str(e)
             print(f"Ключ не сработал ({model}): {error_text[:120]}")
@@ -107,12 +140,26 @@ def ask_gemini_with_keys(messages, keys, model, thinking=False):
 
     raise Exception("Лимит запросов исчерпан. Попробуй через минуту.")
 
-# ── Бесплатная модель ─────────────────────────────────────────────────────
+# ── Бесплатная модель (с умным поиском) ──────────────────────────────────
 
 def ask_gpt(messages):
-    return ask_gemini_with_keys(messages, GEMINI_FREE_KEYS, "gemini-2.5-flash")
+    last_msg = messages[-1]["content"] if messages else ""
+    use_search = needs_search(last_msg)
+    if use_search:
+        print(f"[Core] Web search enabled for: {last_msg[:60]}")
+    return ask_gemini_with_keys(
+        messages, GEMINI_FREE_KEYS, "gemini-2.5-flash",
+        thinking=False, use_search=use_search
+    )
 
-# ── Платная модель ────────────────────────────────────────────────────────
+# ── Платная модель (поиск + thinking) ────────────────────────────────────
 
 def ask_gemini(messages):
-    return ask_gemini_with_keys(messages, GEMINI_PRO_KEYS, "gemini-2.5-flash", thinking=True)
+    last_msg = messages[-1]["content"] if messages else ""
+    use_search = needs_search(last_msg)
+    if use_search:
+        print(f"[Nova] Web search enabled for: {last_msg[:60]}")
+    return ask_gemini_with_keys(
+        messages, GEMINI_PRO_KEYS, "gemini-2.5-flash",
+        thinking=True, use_search=use_search
+    )
