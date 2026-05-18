@@ -660,10 +660,25 @@ def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port, debug=False)
 
+
+def keep_alive():
+    """Пингуем себя каждые 10 минут чтобы Render не засыпал."""
+    import time
+    url = os.environ.get("RENDER_EXTERNAL_URL", "https://elyon-bot.onrender.com")
+    while True:
+        time.sleep(600)
+        try:
+            requests.get(f"{url}/health", timeout=10)
+            print("keep_alive ping sent")
+        except Exception as e:
+            print(f"keep_alive error: {e}")
+
 try:
     print("bot is running...")
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
+    keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
+    keep_alive_thread.start()
     bot.infinity_polling(timeout=20, long_polling_timeout=5)
 except KeyboardInterrupt:
     print("Stopped.")
