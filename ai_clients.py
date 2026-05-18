@@ -4,66 +4,45 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
 import os
 import random
-import re
+import time
 from google import genai
 from google.genai import types as genai_types
+from openai import OpenAI
 
-# ── Ключи ─────────────────────────────────────────────────────────────────
-
-GEMINI_FREE_KEYS = [
-    os.environ.get("GEMINI_FREE_KEY_1", ""),
-    os.environ.get("GEMINI_FREE_KEY_2", ""),
-    os.environ.get("GEMINI_FREE_KEY_3", ""),
+# ── Gemini ключи (для обеих моделей) ──────────────────────────────────────
+GEMINI_KEYS = [
+    os.environ.get("GEMINI_API_KEY_1", ""),
+    os.environ.get("GEMINI_API_KEY_2", ""),
+    os.environ.get("GEMINI_API_KEY_3", ""),
 ]
-GEMINI_FREE_KEYS = [k for k in GEMINI_FREE_KEYS if k]
+GEMINI_KEYS = [k for k in GEMINI_KEYS if k]
 
-GEMINI_PRO_KEYS = [
-    os.environ.get("GEMINI_PRO_KEY_1", ""),
-    os.environ.get("GEMINI_PRO_KEY_2", ""),
-    os.environ.get("GEMINI_PRO_KEY_3", ""),
+# ── OpenAI ключи (резерв для бесплатной модели) ───────────────────────────
+OPENAI_KEYS = [
+    os.environ.get("OPENAI_API_KEY_1", ""),
+    os.environ.get("OPENAI_API_KEY_2", ""),
+    os.environ.get("OPENAI_API_KEY_3", ""),
 ]
-GEMINI_PRO_KEYS = [k for k in GEMINI_PRO_KEYS if k]
+OPENAI_KEYS = [k for k in OPENAI_KEYS if k]
 
-# ── Системный промпт ───────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = (
-    "You are Elyon AI — a smart and helpful assistant. "
-    "Your name is Elyon. Never mention that you are Gemini, Google, ChatGPT, GPT, "
-    "OpenAI, Grok, xAI, or any other AI system. "
-    "If asked who you are or what your name is, always say you are Elyon AI, "
-    "created by the Elyon team. Be friendly, concise, and helpful. "
-    "When you use web search results, present the information naturally without "
-    "mentioning that you searched the web or citing sources explicitly."
-)
+# ── Вспомогательные функции ───────────────────────────────────────────────
 
-# ── Замена упоминаний реальных AI в ответах ───────────────────────────────
+def get_gemini_client(attempt=0):
+    if not GEMINI_KEYS:
+        raise Exception("NO_KEYS: не настроены GEMINI_API_KEY переменные окружения")
+    key = GEMINI_KEYS[attempt % len(GEMINI_KEYS)]
+    return genai.Client(api_key=key)
 
-REPLACE_PAIRS = [
-    (r'\bGemini\b', 'Elyon'),
-    (r'\bGoogle DeepMind\b', 'Elyon team'),
-    (r'\bGoogle\b', 'Elyon team'),
-    (r'\bChatGPT\b', 'Elyon'),
-    (r'\bGPT-[^\s]*', 'Elyon'),
-    (r'\bGPT\b', 'Elyon'),
-    (r'\bOpenAI\b', 'Elyon team'),
-    (r'\bGrok\b', 'Elyon'),
-    (r'\bxAI\b', 'Elyon team'),
-]
 
-def mask_identity(text):
-    for pattern, replacement in REPLACE_PAIRS:
-        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
-    return text
+def get_openai_client():
+    if not OPENAI_KEYS:
+        raise Exception("NO_KEYS: не настроены OPENAI_API_KEY переменные окружения")
+    key = random.choice(OPENAI_KEYS)
+    return OpenAI(api_key=key)
 
-def safe_text(text):
-    if text is None:
-        return "Пустой ответ от AI."
-    text = text.encode("utf-8", errors="ignore").decode("utf-8")
-    return mask_identity(text)
 
-# ── Построение сообщений ──────────────────────────────────────────────────
-
-def build_contents(messages):
+def build_gemini_contents(messages):
     contents = []
     for msg in messages:
         role = "model" if msg["role"] == "assistant" else "user"
@@ -75,91 +54,93 @@ def build_contents(messages):
         )
     return contents
 
-# ── Определяем нужен ли веб-поиск ────────────────────────────────────────
 
-SEARCH_TRIGGERS = [
-    # Люди и личности
-    r'\b(кто такой|who is|who are|расскажи о|tell me about)\b',
-    # Актуальные события
-    r'\b(сейчас|сегодня|now|today|current|latest|новости|news|2024|2025|2026)\b',
-    # Факты которые могут устареть
-    r'\b(цена|price|курс|rate|стоимость|cost)\b',
-    # Конкретные люди/места/события
-    r'\b(president|президент|minister|министр|ceo|founder|основатель)\b',
-    # Прямые вопросы о реальности
-    r'\b(правда ли|is it true|fact|факт|реально|really)\b',
-]
+def build_openai_messages(messages):
+    result = []
+    for msg in messages:
+        role = "assistant" if msg["role"] == "assistant" else "user"
+        result.append({"role": role, "content": str(msg["content"])})
+    return result
 
-def needs_search(text):
-    """Определяем нужен ли веб-поиск для этого запроса."""
-    text_lower = text.lower()
-    for pattern in SEARCH_TRIGGERS:
-        if re.search(pattern, text_lower, re.IGNORECASE):
-            return True
-    return False
 
-# ── Общая функция запроса к Gemini ────────────────────────────────────────
+def safe_text(text):
+    if text is None:
+        return "Пустой ответ от AI."
+    return text.encode("utf-8", errors="ignore").decode("utf-8")
 
-def ask_gemini_with_keys(messages, keys, model, thinking=False, use_search=False):
-    if not keys:
-        raise Exception("NO_KEYS: ключи не настроены в переменных окружения")
 
-    shuffled = keys.copy()
-    random.shuffle(shuffled)
-    last_error = None
+# ── Бесплатная модель: Gemini → OpenAI fallback ───────────────────────────
 
-    for key in shuffled:
+def ask_gpt_via_openai(messages):
+    """Резервный вызов через OpenAI GPT-4o-mini если все Gemini ключи исчерпаны."""
+    print("Переключаемся на OpenAI fallback...")
+    exhausted = []
+    keys_to_try = OPENAI_KEYS.copy()
+    random.shuffle(keys_to_try)
+
+    for key in keys_to_try:
         try:
-            client = genai.Client(api_key=key)
-            cfg = genai_types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT
+            client = OpenAI(api_key=key)
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=build_openai_messages(messages),
+                max_tokens=1000
             )
-
-            if thinking:
-                cfg.thinking_config = genai_types.ThinkingConfig(thinking_budget=8000)
-
-            if use_search:
-                cfg.tools = [genai_types.Tool(
-                    google_search=genai_types.GoogleSearch()
-                )]
-
-            response = client.models.generate_content(
-                model=model,
-                contents=build_contents(messages),
-                config=cfg
-            )
-            return safe_text(response.text)
-
+            return safe_text(response.choices[0].message.content)
         except Exception as e:
             error_text = str(e)
-            print(f"Ключ не сработал ({model}): {error_text[:120]}")
-            last_error = error_text
-            if "429" in error_text or "RESOURCE_EXHAUSTED" in error_text:
+            if "429" in error_text or "quota" in error_text.lower() or "rate" in error_text.lower():
+                print(f"OpenAI ключ исчерпан, пробуем следующий...")
+                exhausted.append(key)
                 continue
             raise
 
     raise Exception("Лимит запросов исчерпан. Попробуй через минуту.")
 
-# ── Бесплатная модель (с умным поиском) ──────────────────────────────────
 
-def ask_gpt(messages):
-    last_msg = messages[-1]["content"] if messages else ""
-    use_search = needs_search(last_msg)
-    if use_search:
-        print(f"[Core] Web search enabled for: {last_msg[:60]}")
-    return ask_gemini_with_keys(
-        messages, GEMINI_FREE_KEYS, "gemini-2.5-flash",
-        thinking=False, use_search=use_search
-    )
+def ask_gpt(messages, attempt=0):
+    """Бесплатная модель: сначала Gemini flash-lite, при исчерпании — OpenAI."""
+    # Пробуем все Gemini ключи
+    if attempt < len(GEMINI_KEYS):
+        try:
+            client = get_gemini_client(attempt)
+            response = client.models.generate_content(
+                model="gemini-2.0-flash-lite",
+                contents=build_gemini_contents(messages)
+            )
+            return safe_text(response.text)
+        except Exception as e:
+            error_text = str(e)
+            if "429" in error_text or "RESOURCE_EXHAUSTED" in error_text:
+                print(f"Gemini ключ {attempt + 1} исчерпан, пробуем следующий...")
+                time.sleep(1)
+                return ask_gpt(messages, attempt + 1)
+            raise
 
-# ── Платная модель (поиск + thinking) ────────────────────────────────────
+    # Все Gemini ключи исчерпаны — переключаемся на OpenAI
+    if OPENAI_KEYS:
+        return ask_gpt_via_openai(messages)
 
-def ask_gemini(messages):
-    last_msg = messages[-1]["content"] if messages else ""
-    use_search = needs_search(last_msg)
-    if use_search:
-        print(f"[Nova] Web search enabled for: {last_msg[:60]}")
-    return ask_gemini_with_keys(
-        messages, GEMINI_PRO_KEYS, "gemini-2.5-flash",
-        thinking=True, use_search=use_search
-    )
+    raise Exception("Лимит запросов исчерпан. Попробуй через минуту.")
+
+
+# ── Платная модель: только Gemini ─────────────────────────────────────────
+
+def ask_gemini(messages, attempt=0):
+    if attempt >= max(len(GEMINI_KEYS), 1):
+        raise Exception("Все API ключи исчерпаны")
+
+    try:
+        client = get_gemini_client(attempt)
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=build_gemini_contents(messages)
+        )
+        return safe_text(response.text)
+
+    except Exception as e:
+        error_text = str(e)
+        if "429" in error_text or "RESOURCE_EXHAUSTED" in error_text:
+            print(f"Gemini ключ исчерпан, попытка {attempt + 1} из {len(GEMINI_KEYS)}")
+            return ask_gemini(messages, attempt + 1)
+        raise
