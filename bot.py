@@ -16,7 +16,7 @@ from database import (init_db, get_user, register_user, set_ai_model,
                       add_balance, get_referral_count, get_all_users,
                       get_stats, get_payments, log_payment,
                       is_maintenance, set_setting, get_setting)
-from ai_clients import ask_gpt, ask_gemini, ask_with_file
+from ai_clients import ask_gpt, ask_gemini, ask_with_file, ask_with_file
 
 logging.basicConfig(level=logging.CRITICAL)
 
@@ -823,6 +823,58 @@ def api_user(user_id):
         "has_sub":   has_active_sub(user_id),
         "ref_link":  f"https://t.me/{BOT_USERNAME}?start={user_id}"
     })
+
+@app.route("/api/file", methods=["POST", "OPTIONS"])
+def api_file():
+    if request.method == "OPTIONS":
+        return "", 204
+    try:
+        user_id  = request.form.get("user_id")
+        model    = request.form.get("model", "gpt")
+        prompt   = request.form.get("prompt", "Проанализируй этот файл")
+        history_raw = request.form.get("history", "[]")
+        import json
+        history = json.loads(history_raw)
+
+        if not user_id:
+            return jsonify({"error": "Missing user_id"}), 400
+
+        user_id = int(user_id)
+
+        if is_maintenance() and user_id != OWNER_ID:
+            return jsonify({"error": "Maintenance in progress"}), 503
+
+        if model == "gemini" and not has_active_sub(user_id):
+            return jsonify({"error": "No active subscription"}), 403
+
+        if "file" not in request.files:
+            return jsonify({"error": "No file provided"}), 400
+
+        f = request.files["file"]
+        file_bytes = f.read()
+        file_name = f.filename or "file"
+        mime_type = f.content_type or "application/octet-stream"
+
+        # Определяем mime по расширению если не задан
+        if mime_type == "application/octet-stream":
+            ext = os.path.splitext(file_name.lower())[1]
+            text_exts = {
+                ".py": "text/x-python", ".js": "text/javascript",
+                ".cpp": "text/x-c++", ".c": "text/x-c",
+                ".java": "text/x-java", ".txt": "text/plain",
+                ".md": "text/plain", ".csv": "text/csv",
+                ".json": "application/json", ".html": "text/html",
+                ".css": "text/css", ".sql": "text/plain",
+            }
+            mime_type = text_exts.get(ext, "text/plain")
+
+        use_pro = model == "gemini"
+        reply = ask_with_file(file_bytes, mime_type, file_name, prompt, history, use_pro=use_pro)
+        return jsonify({"reply": reply})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route("/health", methods=["GET"])
 def health():
