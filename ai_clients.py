@@ -78,20 +78,14 @@ def build_contents(messages):
 # ── Определяем нужен ли веб-поиск ────────────────────────────────────────
 
 SEARCH_TRIGGERS = [
-    # Люди и личности
     r'\b(кто такой|who is|who are|расскажи о|tell me about)\b',
-    # Актуальные события
     r'\b(сейчас|сегодня|now|today|current|latest|новости|news|2024|2025|2026)\b',
-    # Факты которые могут устареть
     r'\b(цена|price|курс|rate|стоимость|cost)\b',
-    # Конкретные люди/места/события
     r'\b(president|президент|minister|министр|ceo|founder|основатель)\b',
-    # Прямые вопросы о реальности
     r'\b(правда ли|is it true|fact|факт|реально|really)\b',
 ]
 
 def needs_search(text):
-    """Определяем нужен ли веб-поиск для этого запроса."""
     text_lower = text.lower()
     for pattern in SEARCH_TRIGGERS:
         if re.search(pattern, text_lower, re.IGNORECASE):
@@ -114,10 +108,8 @@ def ask_gemini_with_keys(messages, keys, model, thinking=False, use_search=False
             cfg = genai_types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT
             )
-
             if thinking:
                 cfg.thinking_config = genai_types.ThinkingConfig(thinking_budget=8000)
-
             if use_search:
                 cfg.tools = [genai_types.Tool(
                     google_search=genai_types.GoogleSearch()
@@ -136,11 +128,14 @@ def ask_gemini_with_keys(messages, keys, model, thinking=False, use_search=False
             last_error = error_text
             if "429" in error_text or "RESOURCE_EXHAUSTED" in error_text:
                 continue
+            if "503" in error_text or "UNAVAILABLE" in error_text:
+                # При 503 пробуем следующий ключ
+                continue
             raise
 
     raise Exception("Лимит запросов исчерпан. Попробуй через минуту.")
 
-# ── Бесплатная модель (с умным поиском) ──────────────────────────────────
+# ── Бесплатная модель ─────────────────────────────────────────────────────
 
 def ask_gpt(messages):
     last_msg = messages[-1]["content"] if messages else ""
@@ -152,7 +147,7 @@ def ask_gpt(messages):
         thinking=False, use_search=use_search
     )
 
-# ── Платная модель (поиск + thinking) ────────────────────────────────────
+# ── Платная модель ────────────────────────────────────────────────────────
 
 def ask_gemini(messages):
     last_msg = messages[-1]["content"] if messages else ""
@@ -163,3 +158,76 @@ def ask_gemini(messages):
         messages, GEMINI_PRO_KEYS, "gemini-2.5-flash",
         thinking=True, use_search=use_search
     )
+
+# ── Запрос с файлом ───────────────────────────────────────────────────────
+
+def ask_with_file(file_bytes, mime_type, file_name, user_prompt, history, use_pro=False):
+    """Отправляет файл + текст в Gemini для анализа."""
+    keys = GEMINI_PRO_KEYS if use_pro else GEMINI_FREE_KEYS
+    model = "gemini-2.5-flash"
+
+    if not keys:
+        raise Exception("NO_KEYS: ключи не настроены")
+
+    shuffled = keys.copy()
+    random.shuffle(shuffled)
+
+    for key in shuffled:
+        try:
+            client = genai.Client(api_key=key)
+
+            # Загружаем файл через Files API
+            file_obj = client.files.upload(
+                file=io.BytesIO(file_bytes),
+                config={"mime_type": mime_type, "display_name": file_name}
+            )
+
+            # Строим контент: история + файл + запрос
+            contents = []
+            for msg in history[:-1]:
+                role = "model" if msg["role"] == "assistant" else "user"
+                contents.append(genai_types.Content(
+                    role=role,
+                    parts=[genai_types.Part(text=str(msg["content"]))]
+                ))
+
+            contents.append(genai_types.Content(
+                role="user",
+                parts=[
+                    genai_types.Part(file_data=genai_types.FileData(
+                        file_uri=file_obj.uri,
+                        mime_type=mime_type
+                    )),
+                    genai_types.Part(text=user_prompt)
+                ]
+            ))
+
+            cfg = genai_types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT
+            )
+            if use_pro:
+                cfg.thinking_config = genai_types.ThinkingConfig(thinking_budget=8000)
+
+            response = client.models.generate_content(
+                model=model,
+                contents=contents,
+                config=cfg
+            )
+
+            try:
+                client.files.delete(name=file_obj.name)
+            except:
+                pass
+
+            return safe_text(response.text)
+
+        except Exception as e:
+            error_text = str(e)
+            print(f"ask_with_file error: {error_text[:120]}")
+            if "429" in error_text or "RESOURCE_EXHAUSTED" in error_text:
+                continue
+            if "503" in error_text or "UNAVAILABLE" in error_text:
+                continue
+            raise
+
+    raise Exception("Лимит запросов исчерпан. Попробуй через минуту.")
