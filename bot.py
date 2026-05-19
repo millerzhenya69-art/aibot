@@ -1,4 +1,6 @@
 import os
+import io
+import tempfile
 import telebot
 from telebot import types
 from datetime import datetime, timedelta
@@ -14,7 +16,7 @@ from database import (init_db, get_user, register_user, set_ai_model,
                       add_balance, get_referral_count, get_all_users,
                       get_stats, get_payments, log_payment,
                       is_maintenance, set_setting, get_setting)
-from ai_clients import ask_gpt, ask_gemini
+from ai_clients import ask_gpt, ask_gemini, ask_with_file
 
 logging.basicConfig(level=logging.CRITICAL)
 
@@ -29,8 +31,7 @@ database.OWNER_ID = OWNER_ID
 bot = telebot.TeleBot(TOKEN, threaded=False)
 init_db()
 
-# Состояния для custom days
-user_states = {}  # user_id: {"state": ..., "data": ...}
+user_states = {}
 
 # ── Цены ──────────────────────────────────────────────────────────────────
 
@@ -39,21 +40,53 @@ PRICES = {
     "halfyear": {"stars": 60,  "label": "6 months — 60 ⭐", "days": 180, "rub": 182},
     "forever":  {"stars": 120, "label": "Forever — 120 ⭐", "days": 0,   "rub": 429},
 }
-
 CRYPTO_PRICES = {
     "month":    {"amount": "0.55", "label": "30 days — 50 ₽"},
     "halfyear": {"amount": "1.10", "label": "6 months — 182 ₽"},
     "forever":  {"amount": "2.20", "label": "Forever — 429 ₽"},
 }
-
 VIRTUAL_PRICES = {
     "month":    {"rub": 50,  "label": "30 days — 50 монет"},
     "halfyear": {"rub": 182, "label": "6 months — 182 монеты"},
     "forever":  {"rub": 429, "label": "Forever — 429 монет"},
 }
+STARS_PER_RUB = 1 / 1.82
+RUB_PER_DAY   = 50 / 30
 
-STARS_PER_RUB = 1 / 1.82  # 1 рубль = ~0.549 звезды
-RUB_PER_DAY   = 50 / 30   # ~1.67 руб/день
+# ── Поддерживаемые типы файлов ────────────────────────────────────────────
+
+# Файлы которые Gemini может читать напрямую
+GEMINI_SUPPORTED = {
+    # Изображения
+    "image/jpeg", "image/png", "image/gif", "image/webp",
+    # Видео
+    "video/mp4", "video/mpeg", "video/mov", "video/avi", "video/webm",
+    # Аудио
+    "audio/mp3", "audio/mpeg", "audio/wav", "audio/ogg", "audio/flac",
+    # Документы
+    "application/pdf",
+    # Текст и код
+    "text/plain", "text/html", "text/css", "text/javascript",
+    "text/x-python", "text/x-c", "text/x-c++", "text/x-java",
+    "application/json", "text/csv", "text/xml",
+}
+
+# Расширения → MIME типы для текстовых файлов
+TEXT_EXTENSIONS = {
+    ".py": "text/x-python", ".js": "text/javascript", ".ts": "text/javascript",
+    ".cpp": "text/x-c++", ".c": "text/x-c", ".h": "text/x-c",
+    ".java": "text/x-java", ".cs": "text/plain", ".go": "text/plain",
+    ".rs": "text/plain", ".php": "text/plain", ".rb": "text/plain",
+    ".swift": "text/plain", ".kt": "text/plain", ".sh": "text/plain",
+    ".txt": "text/plain", ".md": "text/plain", ".csv": "text/csv",
+    ".json": "application/json", ".xml": "text/xml", ".html": "text/html",
+    ".css": "text/css", ".sql": "text/plain", ".yaml": "text/plain",
+    ".yml": "text/plain", ".toml": "text/plain", ".env": "text/plain",
+}
+
+def get_mime_for_extension(filename):
+    ext = os.path.splitext(filename.lower())[1]
+    return TEXT_EXTENSIONS.get(ext, None)
 
 
 # ── Клавиатуры ────────────────────────────────────────────────────────────
@@ -138,7 +171,7 @@ def show_virtual_payment(chat_id, user_id):
 def calc_custom_price(days):
     rub   = round(RUB_PER_DAY * days, 2)
     stars = max(1, round(rub * STARS_PER_RUB))
-    usdt  = round(rub * 0.011, 2)  # примерный курс
+    usdt  = round(rub * 0.011, 2)
     return rub, stars, usdt
 
 
@@ -154,7 +187,6 @@ def activate_subscription(user_id, plan, chat_id, days=None, label=None):
         price_label = label or PRICES[plan]["label"]
         until = datetime.now() + timedelta(days=PRICES[plan]["days"])
         set_subscription(user_id, plan, until.strftime("%d.%m.%Y %H:%M"))
-
     set_ai_model(user_id, "gemini")
     clear_history(user_id)
     bot.send_message(
@@ -191,6 +223,131 @@ def create_crypto_invoice(amount, user_id, plan, label=None):
     return None
 
 
+# ── Обработка файлов от пользователя ─────────────────────────────────────
+
+def download_telegram_file(file_id):
+    """Скачивает файл из Telegram и возвращает байты."""
+    file_info = bot.get_file(file_id)
+    file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
+    response = requests.get(file_url, timeout=30)
+    return response.content
+
+
+def handle_file_message(message, user_id, ai_model):
+    """Обрабатывает входящий файл и отправляет его в AI."""
+    user = get_user(user_id)
+    if not user:
+        return
+
+    if is_maintenance() and user_id != OWNER_ID:
+        bot.send_message(message.chat.id, "🔧 *Maintenance in progress*", parse_mode="Markdown")
+        return
+
+    if ai_model == "gemini" and not has_active_sub(user_id):
+        bot.send_message(message.chat.id, "⚠️ Subscription expired.")
+        show_payment_options(message.chat.id, user_id)
+        return
+
+    # Определяем файл и его тип
+    file_id = None
+    file_name = "file"
+    mime_type = None
+    caption = message.caption or "Проанализируй этот файл и опиши его содержимое."
+
+    if message.content_type == "photo":
+        file_id = message.photo[-1].file_id
+        mime_type = "image/jpeg"
+        file_name = "image.jpg"
+    elif message.content_type == "document":
+        doc = message.document
+        file_id = doc.file_id
+        file_name = doc.file_name or "document"
+        mime_type = doc.mime_type
+        # Если mime_type не задан — определяем по расширению
+        if not mime_type or mime_type == "application/octet-stream":
+            mime_type = get_mime_for_extension(file_name)
+    elif message.content_type == "video":
+        file_id = message.video.file_id
+        mime_type = "video/mp4"
+        file_name = "video.mp4"
+    elif message.content_type == "audio":
+        file_id = message.audio.file_id
+        mime_type = "audio/mpeg"
+        file_name = "audio.mp3"
+    elif message.content_type == "voice":
+        file_id = message.voice.file_id
+        mime_type = "audio/ogg"
+        file_name = "voice.ogg"
+
+    if not file_id:
+        bot.send_message(message.chat.id, "❌ Unsupported file type.")
+        return
+
+    # Проверяем поддержку
+    if mime_type not in GEMINI_SUPPORTED:
+        # Для ZIP и других архивов
+        ext = os.path.splitext(file_name.lower())[1]
+        if ext in [".zip", ".rar", ".7z", ".tar"]:
+            bot.send_message(message.chat.id,
+                "📦 Archives (ZIP, RAR) cannot be analyzed directly.\n"
+                "Please extract the files and send them individually.")
+            return
+        # Для DOCX/XLSX пробуем как текст
+        if ext in [".docx", ".xlsx", ".xls", ".doc"]:
+            bot.send_message(message.chat.id,
+                "⚠️ Word/Excel files have limited support. "
+                "For best results, save as PDF or TXT and send again.")
+            mime_type = "application/octet-stream"
+
+    bot.send_chat_action(message.chat.id, "typing")
+
+    try:
+        file_bytes = download_telegram_file(file_id)
+        history = get_history(user_id)
+
+        # Добавляем в историю что пользователь отправил файл
+        add_message(user_id, "user", f"[File: {file_name}] {caption}")
+
+        if ai_model == "gpt":
+            reply = ask_with_file(file_bytes, mime_type, file_name, caption, history, use_pro=False)
+        else:
+            reply = ask_with_file(file_bytes, mime_type, file_name, caption, history, use_pro=True)
+
+        add_message(user_id, "assistant", reply)
+
+        # Если AI сгенерировал код — предлагаем скачать как файл
+        if "```" in reply and len(reply) > 200:
+            bot.send_message(message.chat.id, reply)
+            # Извлекаем код из блоков
+            code_blocks = []
+            parts = reply.split("```")
+            for i in range(1, len(parts), 2):
+                block = parts[i]
+                lines = block.split("\n", 1)
+                if len(lines) > 1:
+                    code_blocks.append((lines[0].strip() or "txt", lines[1]))
+            if code_blocks:
+                lang, code = code_blocks[0]
+                ext_map = {"python": "py", "cpp": "cpp", "c": "c", "javascript": "js",
+                           "java": "java", "go": "go", "rust": "rs", "sql": "sql",
+                           "html": "html", "css": "css", "typescript": "ts"}
+                ext = ext_map.get(lang.lower(), lang.lower() or "txt")
+                file_obj = io.BytesIO(code.encode("utf-8"))
+                file_obj.name = f"code.{ext}"
+                bot.send_document(message.chat.id, file_obj,
+                                  caption=f"📄 {file_obj.name}")
+        else:
+            bot.send_message(message.chat.id, reply)
+
+    except Exception as e:
+        error_text = str(e)
+        print("File AI error:", e)
+        if "429" in error_text or "RESOURCE_EXHAUSTED" in error_text:
+            bot.send_message(message.chat.id, "⏳ Too many requests. Try again in a minute.")
+        else:
+            bot.send_message(message.chat.id, f"❌ Error analyzing file: {error_text[:150]}")
+
+
 # ── /start ────────────────────────────────────────────────────────────────
 
 @bot.message_handler(commands=["start"])
@@ -212,7 +369,7 @@ def start(message):
     show_start(message.chat.id, message.from_user.id)
 
 
-# ── Панель управления (только owner) ──────────────────────────────────────
+# ── Панель управления ──────────────────────────────────────────────────────
 
 @bot.message_handler(func=lambda m: m.text == "🛠 Control Panel" and m.from_user.id == OWNER_ID)
 def control_panel(message):
@@ -242,6 +399,30 @@ def control_panel(message):
     )
 
 
+# ── Обработчики файлов ────────────────────────────────────────────────────
+
+@bot.message_handler(content_types=["photo", "video", "audio", "voice"])
+def handle_media(message):
+    ensure_registered(message)
+    user_id = message.from_user.id
+    user = get_user(user_id)
+    if not user or user[4] == "none":
+        show_start(message.chat.id, user_id)
+        return
+    handle_file_message(message, user_id, user[4])
+
+
+@bot.message_handler(content_types=["document"])
+def handle_document(message):
+    ensure_registered(message)
+    user_id = message.from_user.id
+    user = get_user(user_id)
+    if not user or user[4] == "none":
+        show_start(message.chat.id, user_id)
+        return
+    handle_file_message(message, user_id, user[4])
+
+
 # ── Inline кнопки ─────────────────────────────────────────────────────────
 
 @bot.callback_query_handler(func=lambda c: True)
@@ -253,7 +434,6 @@ def handle_callback(call):
     except:
         pass
 
-    # ── Admin actions ──
     if call.data == "admin_users" and user_id == OWNER_ID:
         users = get_all_users()
         if not users:
@@ -286,28 +466,21 @@ def handle_callback(call):
         bot.send_message(chat_id, f"🔧 Maintenance mode: *{status}*", parse_mode="Markdown")
         return
 
-    # ── Custom days ──
     if call.data == "pay_custom":
         user_states[user_id] = {"state": "waiting_custom_days"}
         markup = types.InlineKeyboardMarkup()
         markup.add(types.InlineKeyboardButton("◀️ Back", callback_data="choose_pro"))
-        bot.send_message(
-            chat_id,
-            "📅 *Custom subscription*\n\nEnter the number of days (1–365):",
-            parse_mode="Markdown",
-            reply_markup=markup
-        )
+        bot.send_message(chat_id, "📅 *Custom subscription*\n\nEnter the number of days (1–365):",
+                         parse_mode="Markdown", reply_markup=markup)
         return
 
     if call.data == "back_start":
         show_start(chat_id, user_id)
-
     elif call.data == "choose_free":
         set_ai_model(user_id, "gpt")
         clear_history(user_id)
         bot.send_message(chat_id, "✅ *Elyon Core* activated!\n\nFast answers, always free.",
                          parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
-
     elif call.data == "choose_pro":
         if has_active_sub(user_id):
             set_ai_model(user_id, "gemini")
@@ -316,10 +489,8 @@ def handle_callback(call):
                              parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
         else:
             show_payment_options(chat_id, user_id)
-
     elif call.data == "pay_virtual_menu":
         show_virtual_payment(chat_id, user_id)
-
     elif call.data.startswith("pay_virtual_"):
         plan = call.data.replace("pay_virtual_", "")
         cost = VIRTUAL_PRICES[plan]["rub"]
@@ -328,21 +499,14 @@ def handle_callback(call):
             log_payment(user_id, call.from_user.username or "", plan, "coins", str(cost))
         else:
             bot.send_message(chat_id, "❌ Not enough coins.")
-
     elif call.data.startswith("pay_stars_custom_"):
         days = int(call.data.replace("pay_stars_custom_", ""))
         rub, stars, _ = calc_custom_price(days)
         label = f"{days} days — {stars} ⭐"
-        bot.send_invoice(
-            chat_id,
-            title=f"Elyon Nova — {days} days",
-            description=f"Access to Elyon Nova for {days} days",
-            invoice_payload=f"custom_{days}",
-            provider_token="",
-            currency="XTR",
-            prices=[types.LabeledPrice(label, stars)]
-        )
-
+        bot.send_invoice(chat_id, title=f"Elyon Nova — {days} days",
+                         description=f"Access to Elyon Nova for {days} days",
+                         invoice_payload=f"custom_{days}", provider_token="",
+                         currency="XTR", prices=[types.LabeledPrice(label, stars)])
     elif call.data.startswith("pay_crypto_custom_"):
         days = int(call.data.replace("pay_crypto_custom_", ""))
         rub, _, usdt = calc_custom_price(days)
@@ -356,20 +520,13 @@ def handle_callback(call):
                              parse_mode="Markdown", reply_markup=markup)
         else:
             bot.send_message(chat_id, "❌ Payment error. Try again later.")
-
     elif call.data.startswith("pay_stars_"):
         plan = call.data.replace("pay_stars_", "")
         price = PRICES[plan]
-        bot.send_invoice(
-            chat_id,
-            title=f"Elyon Nova — {price['label']}",
-            description="Access to Elyon Nova (deep thinking AI)",
-            invoice_payload=f"pro_{plan}",
-            provider_token="",
-            currency="XTR",
-            prices=[types.LabeledPrice(price["label"], price["stars"])]
-        )
-
+        bot.send_invoice(chat_id, title=f"Elyon Nova — {price['label']}",
+                         description="Access to Elyon Nova (deep thinking AI)",
+                         invoice_payload=f"pro_{plan}", provider_token="",
+                         currency="XTR", prices=[types.LabeledPrice(price["label"], price["stars"])])
     elif call.data.startswith("pay_crypto_"):
         plan = call.data.replace("pay_crypto_", "")
         price = CRYPTO_PRICES[plan]
@@ -384,7 +541,7 @@ def handle_callback(call):
             bot.send_message(chat_id, "❌ Payment error. Try again later.")
 
 
-# ── Оплата звёздами ───────────────────────────────────────────────────────
+# ── Оплата ────────────────────────────────────────────────────────────────
 
 @bot.pre_checkout_query_handler(func=lambda q: True)
 def pre_checkout(query):
@@ -405,8 +562,6 @@ def payment_success(message):
         activate_subscription(user_id, plan, message.chat.id)
         log_payment(user_id, message.from_user.username or "", plan, "stars", str(PRICES[plan]["stars"]))
 
-
-# ── Проверка CryptoBot ────────────────────────────────────────────────────
 
 @bot.message_handler(commands=["check"])
 def check_crypto_payment(message):
@@ -448,7 +603,9 @@ def menu_chat(message):
         show_start(message.chat.id, message.from_user.id)
         return
     model = "🆓 Elyon Core" if user[4] == "gpt" else "⭐ Elyon Nova"
-    bot.send_message(message.chat.id, f"Current model: *{model}*\n\nWrite your message!", parse_mode="Markdown")
+    bot.send_message(message.chat.id,
+                     f"Current model: *{model}*\n\nWrite your message or send a file!",
+                     parse_mode="Markdown")
 
 
 @bot.message_handler(func=lambda m: m.text == "👤 Personal account")
@@ -463,7 +620,6 @@ def menu_profile(message):
     balance   = get_balance(user_id)
     ref_count = get_referral_count(user_id)
     ref_link  = f"https://t.me/{BOT_USERNAME}?start={user_id}"
-
     if sub_type == "none":
         sub_info = "❌ No subscription"
     elif sub_type == "forever":
@@ -471,7 +627,6 @@ def menu_profile(message):
     else:
         labels = {"month": "30 days", "halfyear": "6 months", "custom": "Custom"}
         sub_info = f"✅ {labels.get(sub_type, sub_type)} (until {sub_until})"
-
     role_emoji = "👑" if user[3] == "owner" else "👤"
     bot.send_message(
         message.chat.id,
@@ -509,7 +664,7 @@ def switch_pro(message):
         show_payment_options(message.chat.id, user_id)
 
 
-# ── AI сообщения ──────────────────────────────────────────────────────────
+# ── AI текстовые сообщения ────────────────────────────────────────────────
 
 MENU_TEXTS = {"💬 Chat with AI", "👤 Personal account", "🆓 Elyon Core", "⭐ Elyon Nova", "🛠 Control Panel"}
 
@@ -522,7 +677,6 @@ def handle_message(message):
     ensure_registered(message)
     user_id = message.from_user.id
 
-    # Обработка ввода custom days
     if user_id in user_states and user_states[user_id].get("state") == "waiting_custom_days":
         try:
             days = int(message.text.strip())
@@ -553,10 +707,9 @@ def handle_message(message):
     if message.text and message.text in MENU_TEXTS:
         return
 
-    # Режим обслуживания
     if is_maintenance() and user_id != OWNER_ID:
         bot.send_message(message.chat.id,
-                         "🔧 *Maintenance in progress*\n\nElyon AI is temporarily unavailable. Please try again later.",
+                         "🔧 *Maintenance in progress*\n\nElyon AI is temporarily unavailable.",
                          parse_mode="Markdown")
         return
 
@@ -582,7 +735,29 @@ def handle_message(message):
     try:
         reply = ask_gpt(history) if ai_model == "gpt" else ask_gemini(history)
         add_message(user_id, "assistant", reply)
-        bot.send_message(message.chat.id, reply)
+
+        # Автоматически отправляем код как файл если ответ содержит большой блок кода
+        if "```" in reply and len(reply) > 300:
+            bot.send_message(message.chat.id, reply)
+            parts = reply.split("```")
+            for i in range(1, len(parts), 2):
+                block = parts[i]
+                lines = block.split("\n", 1)
+                if len(lines) > 1 and len(lines[1].strip()) > 50:
+                    lang = lines[0].strip().lower()
+                    code = lines[1]
+                    ext_map = {"python": "py", "cpp": "cpp", "c": "c", "javascript": "js",
+                               "java": "java", "go": "go", "rust": "rs", "sql": "sql",
+                               "html": "html", "css": "css", "typescript": "ts",
+                               "bash": "sh", "shell": "sh"}
+                    ext = ext_map.get(lang, lang or "txt")
+                    file_obj = io.BytesIO(code.encode("utf-8"))
+                    file_obj.name = f"elyon_code.{ext}"
+                    bot.send_document(message.chat.id, file_obj, caption=f"📄 {file_obj.name}")
+                    break  # отправляем только первый блок кода
+        else:
+            bot.send_message(message.chat.id, reply)
+
     except Exception as e:
         error_text = str(e)
         print("AI error:", e)
@@ -660,9 +835,7 @@ def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port, debug=False)
 
-
 def keep_alive():
-    """Пингуем себя каждые 10 минут чтобы Render не засыпал."""
     import time
     url = os.environ.get("RENDER_EXTERNAL_URL", "https://elyon-bot.onrender.com")
     while True:
