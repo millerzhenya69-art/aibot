@@ -824,6 +824,60 @@ def api_user(user_id):
         "ref_link":  f"https://t.me/{BOT_USERNAME}?start={user_id}"
     })
 
+@app.route("/api/file_b64", methods=["POST", "OPTIONS"])
+def api_file_b64():
+    if request.method == "OPTIONS":
+        return "", 204
+    try:
+        import base64 as b64
+        import json
+        data = request.json
+        user_id   = data.get("user_id")
+        model     = data.get("model", "gpt")
+        prompt    = data.get("prompt", "Проанализируй этот файл")
+        file_name = data.get("file_name", "file")
+        file_type = data.get("file_type", "application/octet-stream")
+        file_b64  = data.get("file_data", "")
+        history   = data.get("history", [])
+
+        if not user_id:
+            return jsonify({"error": "Missing user_id"}), 400
+
+        user_id = int(user_id)
+
+        if is_maintenance() and user_id != OWNER_ID:
+            return jsonify({"error": "Maintenance in progress"}), 503
+
+        if model == "gemini" and not has_active_sub(user_id):
+            return jsonify({"error": "No active subscription"}), 403
+
+        file_bytes = b64.b64decode(file_b64)
+
+        # Определяем mime по расширению если не задан
+        mime_type = file_type
+        if not mime_type or mime_type == "application/octet-stream":
+            ext = os.path.splitext(file_name.lower())[1]
+            text_exts = {
+                ".py": "text/x-python", ".js": "text/javascript",
+                ".cpp": "text/x-c++", ".c": "text/x-c",
+                ".java": "text/x-java", ".txt": "text/plain",
+                ".md": "text/plain", ".csv": "text/csv",
+                ".json": "application/json", ".html": "text/html",
+                ".css": "text/css", ".sql": "text/plain",
+                ".gif": "image/gif", ".png": "image/png",
+                ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                ".webp": "image/webp", ".pdf": "application/pdf",
+            }
+            mime_type = text_exts.get(ext, "text/plain")
+
+        use_pro = model == "gemini"
+        reply = ask_with_file(file_bytes, mime_type, file_name, prompt, history, use_pro=use_pro)
+        return jsonify({"reply": reply})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/file", methods=["POST", "OPTIONS"])
 def api_file():
     if request.method == "OPTIONS":
