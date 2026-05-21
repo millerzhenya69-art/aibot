@@ -109,12 +109,16 @@ def init_db():
     # Дефолтные настройки
     cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('maintenance', '0')")
 
-    # Миграция старых БД — добавляем отсутствующие колонки
-    for col, defval in [("balance", "0"), ("referred_by", "NULL")]:
+    # Миграция старых БД — добавляем отсутствующие колонки безопасно
+    safe_migrations = [
+        ("ALTER TABLE users ADD COLUMN balance INTEGER DEFAULT 0",),
+        ("ALTER TABLE users ADD COLUMN referred_by INTEGER DEFAULT NULL",),
+    ]
+    for (sql,) in safe_migrations:
         try:
-            cursor.execute(f"ALTER TABLE users ADD COLUMN {col} INTEGER DEFAULT {defval}")
+            cursor.execute(sql)
         except:
-            pass
+            pass  # колонка уже существует — игнорируем
 
     conn.commit()
 
