@@ -1,7 +1,5 @@
 import sys
 import io
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
 import os
 import tempfile
 import telebot
@@ -31,7 +29,7 @@ TOKEN        = os.environ.get("BOT_TOKEN", "")
 OWNER_ID     = int(os.environ.get("OWNER_ID", "7113603197"))
 CRYPTO_TOKEN = os.environ.get("CRYPTO_TOKEN", "")
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "Elyon_by_unkony_bot")
-WATA_TOKEN   = os.environ.get("WATA_TOKEN", "")
+
 
 import database
 database.OWNER_ID = OWNER_ID
@@ -134,7 +132,6 @@ def show_payment_options(chat_id, user_id):
         types.InlineKeyboardButton("⭐ Навсегда — 120 звёзд",  callback_data="pay_stars_forever"),
         types.InlineKeyboardButton("💳 Навсегда — 429 ₽",       callback_data="pay_crypto_forever"),
         types.InlineKeyboardButton("📅 Произвольный срок",      callback_data="pay_custom"),
-        types.InlineKeyboardButton("💳 Wata (карта РФ)",        callback_data="pay_wata_menu"),
         types.InlineKeyboardButton("🎁 Подарком [TEST]",        callback_data="pay_gift_menu"),
     )
     if balance >= 50:
@@ -147,7 +144,6 @@ def show_payment_options(chat_id, user_id):
         "⭐ Elyon Nova — Подписка\n\n"
         "⭐ Telegram Stars\n"
         "💳 CryptoBot (₽/USDT)\n"
-        "💳 Wata (карта РФ)\n"
         "🎁 Подарком (тест)\n"
         "📅 Произвольное количество дней\n"
         + (f"🪙 Монеты (баланс: {balance})\n" if balance >= 50 else "") +
@@ -700,47 +696,6 @@ def handle_callback(call):
         bot.send_message(chat_id, f"Тех.работы: {status}", reply_markup=markup if new_val == "1" else None)
         return
 
-    # ── Wata меню ──
-    if call.data == "pay_wata_menu":
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        for plan_key, plan_data in PRICES.items():
-            markup.add(types.InlineKeyboardButton(
-                f"💳 {plan_data['label'].replace('⭐', '₽')} ({plan_data['rub']} ₽)",
-                callback_data=f"pay_wata_{plan_key}"
-            ))
-        markup.add(types.InlineKeyboardButton("◀️ Назад", callback_data="choose_pro"))
-        bot.send_message(
-            chat_id,
-            "💳 Оплата через Wata (карта РФ)\n\nВыбери тариф:",
-            reply_markup=markup
-        )
-        return
-
-    if call.data.startswith("pay_wata_"):
-        plan = call.data.replace("pay_wata_", "")
-        price = PRICES.get(plan)
-        if not price:
-            bot.send_message(chat_id, "Неизвестный тариф.")
-            return
-        if not WATA_TOKEN:
-            bot.send_message(chat_id,
-                "Оплата через Wata временно недоступна. "
-                "Попробуй другой способ оплаты.")
-            return
-        try:
-            bot.send_invoice(
-                chat_id,
-                title=f"Elyon Nova — {price['label']}",
-                description="Доступ к Elyon Nova (расширенный AI)",
-                invoice_payload=f"wata_pro_{plan}",
-                provider_token=WATA_TOKEN,
-                currency="RUB",
-                prices=[types.LabeledPrice(price["label"], price["rub"] * 100)]
-            )
-        except Exception as e:
-            bot.send_message(chat_id, f"Ошибка создания платежа Wata: {e}")
-        return
-
     # ── Подарок (тест) ──
     if call.data == "pay_gift_menu":
         markup = types.InlineKeyboardMarkup(row_width=1)
@@ -884,14 +839,6 @@ def payment_success(message):
             "Теперь в твоём профиле отображается специальная роль.",
             reply_markup=main_menu_keyboard(user_id)
         )
-        return
-
-    # Wata
-    if payload.startswith("wata_pro_"):
-        plan = payload.replace("wata_pro_", "")
-        activate_subscription(user_id, plan, message.chat.id)
-        log_payment(user_id, message.from_user.username or "", plan, "wata",
-                    str(PRICES.get(plan, {}).get("rub", "?")))
         return
 
     # Stars custom
