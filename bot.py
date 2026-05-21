@@ -1,5 +1,8 @@
-import os
+import sys
 import io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
+import os
 import tempfile
 import telebot
 from telebot import types
@@ -10,13 +13,17 @@ import threading
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
-from database import (init_db, get_user, register_user, set_ai_model,
-                      set_subscription, has_active_sub, add_message,
-                      get_history, clear_history, get_balance, spend_balance,
-                      add_balance, get_referral_count, get_all_users,
-                      get_stats, get_payments, log_payment,
-                      is_maintenance, set_setting, get_setting)
-from ai_clients import ask_gpt, ask_gemini, ask_with_file, ask_with_file
+from database import (init_db, get_user, get_user_by_username, register_user,
+                      set_ai_model, set_subscription, remove_subscription,
+                      set_role, has_active_sub, add_message, get_history,
+                      clear_history, get_balance, spend_balance, add_balance,
+                      get_referral_count, get_all_users, get_stats,
+                      get_payments, log_payment, is_maintenance,
+                      set_setting, get_setting, log_admin_grant,
+                      get_mini_app_chats, save_mini_app_chat,
+                      delete_mini_app_chat, log_session_activity,
+                      get_user_purchase_history)
+from ai_clients import ask_gpt, ask_gemini, ask_with_file, check_keys_status
 
 logging.basicConfig(level=logging.CRITICAL)
 
@@ -24,6 +31,7 @@ TOKEN        = os.environ.get("BOT_TOKEN", "")
 OWNER_ID     = int(os.environ.get("OWNER_ID", "7113603197"))
 CRYPTO_TOKEN = os.environ.get("CRYPTO_TOKEN", "")
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "Elyon_by_unkony_bot")
+WATA_TOKEN   = os.environ.get("WATA_TOKEN", "")
 
 import database
 database.OWNER_ID = OWNER_ID
@@ -36,42 +44,37 @@ user_states = {}
 # ── Цены ──────────────────────────────────────────────────────────────────
 
 PRICES = {
-    "month":    {"stars": 30,  "label": "30 days — 30 ⭐",  "days": 30,  "rub": 50},
-    "halfyear": {"stars": 60,  "label": "6 months — 60 ⭐", "days": 180, "rub": 182},
-    "forever":  {"stars": 120, "label": "Forever — 120 ⭐", "days": 0,   "rub": 429},
+    "month":    {"stars": 30,  "label": "30 дней — 30 ⭐",    "days": 30,  "rub": 50},
+    "halfyear": {"stars": 60,  "label": "6 месяцев — 60 ⭐",  "days": 180, "rub": 182},
+    "forever":  {"stars": 120, "label": "Навсегда — 120 ⭐",  "days": 0,   "rub": 429},
 }
 CRYPTO_PRICES = {
-    "month":    {"amount": "0.55", "label": "30 days — 50 ₽"},
-    "halfyear": {"amount": "1.10", "label": "6 months — 182 ₽"},
-    "forever":  {"amount": "2.20", "label": "Forever — 429 ₽"},
+    "month":    {"amount": "0.55", "label": "30 дней — 50 ₽"},
+    "halfyear": {"amount": "1.10", "label": "6 месяцев — 182 ₽"},
+    "forever":  {"amount": "2.20", "label": "Навсегда — 429 ₽"},
 }
 VIRTUAL_PRICES = {
-    "month":    {"rub": 50,  "label": "30 days — 50 монет"},
-    "halfyear": {"rub": 182, "label": "6 months — 182 монеты"},
-    "forever":  {"rub": 429, "label": "Forever — 429 монет"},
+    "month":    {"rub": 50,  "label": "30 дней — 50 монет"},
+    "halfyear": {"rub": 182, "label": "6 месяцев — 182 монеты"},
+    "forever":  {"rub": 429, "label": "Навсегда — 429 монет"},
 }
 STARS_PER_RUB = 1 / 1.82
 RUB_PER_DAY   = 50 / 30
 
+BETA_TESTER_STARS = 50
+
 # ── Поддерживаемые типы файлов ────────────────────────────────────────────
 
-# Файлы которые Gemini может читать напрямую
 GEMINI_SUPPORTED = {
-    # Изображения
     "image/jpeg", "image/png", "image/gif", "image/webp",
-    # Видео
     "video/mp4", "video/mpeg", "video/mov", "video/avi", "video/webm",
-    # Аудио
     "audio/mp3", "audio/mpeg", "audio/wav", "audio/ogg", "audio/flac",
-    # Документы
     "application/pdf",
-    # Текст и код
     "text/plain", "text/html", "text/css", "text/javascript",
     "text/x-python", "text/x-c", "text/x-c++", "text/x-java",
     "application/json", "text/csv", "text/xml",
 }
 
-# Расширения → MIME типы для текстовых файлов
 TEXT_EXTENSIONS = {
     ".py": "text/x-python", ".js": "text/javascript", ".ts": "text/javascript",
     ".cpp": "text/x-c++", ".c": "text/x-c", ".h": "text/x-c",
@@ -112,11 +115,10 @@ def show_start(chat_id, user_id=None):
     )
     bot.send_message(
         chat_id,
-        "👋 *Welcome to Elyon AI!*\n\n"
-        "🆓 *Elyon Core* — free, fast answers\n"
-        "⭐ *Elyon Nova* — pro, deep thinking\n\n"
-        "Choose your version:",
-        parse_mode="Markdown",
+        "👋 Добро пожаловать в Elyon AI!\n\n"
+        "🆓 Elyon Core — бесплатно, быстрые ответы\n"
+        "⭐ Elyon Nova — про, глубокое мышление\n\n"
+        "Выбери версию:",
         reply_markup=markup
     )
 
@@ -125,28 +127,31 @@ def show_payment_options(chat_id, user_id):
     balance = get_balance(user_id)
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
-        types.InlineKeyboardButton("⭐ 30 days — 30 stars",   callback_data="pay_stars_month"),
-        types.InlineKeyboardButton("💳 30 days — 50 ₽",       callback_data="pay_crypto_month"),
-        types.InlineKeyboardButton("⭐ 6 months — 60 stars",  callback_data="pay_stars_halfyear"),
-        types.InlineKeyboardButton("💳 6 months — 182 ₽",     callback_data="pay_crypto_halfyear"),
-        types.InlineKeyboardButton("⭐ Forever — 120 stars",  callback_data="pay_stars_forever"),
-        types.InlineKeyboardButton("💳 Forever — 429 ₽",      callback_data="pay_crypto_forever"),
-        types.InlineKeyboardButton("📅 Custom days",          callback_data="pay_custom"),
+        types.InlineKeyboardButton("⭐ 30 дней — 30 звёзд",    callback_data="pay_stars_month"),
+        types.InlineKeyboardButton("💳 30 дней — 50 ₽",         callback_data="pay_crypto_month"),
+        types.InlineKeyboardButton("⭐ 6 месяцев — 60 звёзд",  callback_data="pay_stars_halfyear"),
+        types.InlineKeyboardButton("💳 6 месяцев — 182 ₽",      callback_data="pay_crypto_halfyear"),
+        types.InlineKeyboardButton("⭐ Навсегда — 120 звёзд",  callback_data="pay_stars_forever"),
+        types.InlineKeyboardButton("💳 Навсегда — 429 ₽",       callback_data="pay_crypto_forever"),
+        types.InlineKeyboardButton("📅 Произвольный срок",      callback_data="pay_custom"),
+        types.InlineKeyboardButton("💳 Wata (карта РФ)",        callback_data="pay_wata_menu"),
+        types.InlineKeyboardButton("🎁 Подарком [TEST]",        callback_data="pay_gift_menu"),
     )
     if balance >= 50:
         markup.add(types.InlineKeyboardButton(
-            f"🪙 Pay with coins (balance: {balance})", callback_data="pay_virtual_menu"
+            f"🪙 Монеты (баланс: {balance})", callback_data="pay_virtual_menu"
         ))
-    markup.add(types.InlineKeyboardButton("◀️ Back", callback_data="back_start"))
+    markup.add(types.InlineKeyboardButton("◀️ Назад", callback_data="back_start"))
     bot.send_message(
         chat_id,
-        "⭐ *Elyon Nova — Subscription*\n\n"
+        "⭐ Elyon Nova — Подписка\n\n"
         "⭐ Telegram Stars\n"
         "💳 CryptoBot (₽/USDT)\n"
-        "📅 Custom number of days\n"
-        + (f"🪙 Virtual coins (balance: *{balance}*)\n" if balance >= 50 else "") +
-        "\nChoose plan and payment method:",
-        parse_mode="Markdown",
+        "💳 Wata (карта РФ)\n"
+        "🎁 Подарком (тест)\n"
+        "📅 Произвольное количество дней\n"
+        + (f"🪙 Монеты (баланс: {balance})\n" if balance >= 50 else "") +
+        "\nВыбери тариф и способ оплаты:",
         reply_markup=markup
     )
 
@@ -159,11 +164,10 @@ def show_virtual_payment(chat_id, user_id):
             markup.add(types.InlineKeyboardButton(
                 f"🪙 {data['label']}", callback_data=f"pay_virtual_{plan}"
             ))
-    markup.add(types.InlineKeyboardButton("◀️ Back", callback_data="choose_pro"))
+    markup.add(types.InlineKeyboardButton("◀️ Назад", callback_data="choose_pro"))
     bot.send_message(
         chat_id,
-        f"🪙 *Pay with virtual coins*\n\nYour balance: *{balance}* coins\n\nChoose plan:",
-        parse_mode="Markdown",
+        f"🪙 Оплата виртуальными монетами\n\nТвой баланс: {balance} монет\n\nВыбери тариф:",
         reply_markup=markup
     )
 
@@ -182,7 +186,7 @@ def activate_subscription(user_id, plan, chat_id, days=None, label=None):
     elif plan == "custom" and days:
         until = datetime.now() + timedelta(days=days)
         set_subscription(user_id, "custom", until.strftime("%d.%m.%Y %H:%M"))
-        price_label = label or f"{days} days"
+        price_label = label or f"{days} дней"
     else:
         price_label = label or PRICES[plan]["label"]
         until = datetime.now() + timedelta(days=PRICES[plan]["days"])
@@ -191,13 +195,12 @@ def activate_subscription(user_id, plan, chat_id, days=None, label=None):
     clear_history(user_id)
     bot.send_message(
         chat_id,
-        f"✅ *Subscription activated!*\nPlan: *{price_label}*\n\nYou are now using *Elyon Nova* 🌟",
-        parse_mode="Markdown",
+        f"✅ Подписка активирована!\nТариф: {price_label}\n\nТеперь ты используешь Elyon Nova 🌟",
         reply_markup=main_menu_keyboard(user_id)
     )
     try:
-        uname = bot.get_chat(user_id).username or "no username"
-        bot.send_message(OWNER_ID, f"💰 New subscription!\nUser: @{uname}\nID: {user_id}\nPlan: {price_label}")
+        uname = bot.get_chat(user_id).username or "без username"
+        bot.send_message(OWNER_ID, f"💰 Новая подписка!\nПользователь: @{uname}\nID: {user_id}\nТариф: {price_label}")
     except:
         pass
 
@@ -226,7 +229,6 @@ def create_crypto_invoice(amount, user_id, plan, label=None):
 # ── Обработка файлов от пользователя ─────────────────────────────────────
 
 def download_telegram_file(file_id):
-    """Скачивает файл из Telegram и возвращает байты."""
     file_info = bot.get_file(file_id)
     file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
     response = requests.get(file_url, timeout=30)
@@ -234,25 +236,23 @@ def download_telegram_file(file_id):
 
 
 def handle_file_message(message, user_id, ai_model):
-    """Обрабатывает входящий файл и отправляет его в AI."""
     user = get_user(user_id)
     if not user:
         return
 
     if is_maintenance() and user_id != OWNER_ID:
-        bot.send_message(message.chat.id, "🔧 *Maintenance in progress*", parse_mode="Markdown")
+        bot.send_message(message.chat.id, "🔧 Технические работы")
         return
 
     if ai_model == "gemini" and not has_active_sub(user_id):
-        bot.send_message(message.chat.id, "⚠️ Subscription expired.")
+        bot.send_message(message.chat.id, "⚠️ Подписка истекла.")
         show_payment_options(message.chat.id, user_id)
         return
 
-    # Определяем файл и его тип
-    file_id = None
+    file_id   = None
     file_name = "file"
     mime_type = None
-    caption = message.caption or "Проанализируй этот файл и опиши его содержимое."
+    caption   = message.caption or "Проанализируй этот файл и опиши его содержимое."
 
     if message.content_type == "photo":
         file_id = message.photo[-1].file_id
@@ -263,7 +263,6 @@ def handle_file_message(message, user_id, ai_model):
         file_id = doc.file_id
         file_name = doc.file_name or "document"
         mime_type = doc.mime_type
-        # Если mime_type не задан — определяем по расширению
         if not mime_type or mime_type == "application/octet-stream":
             mime_type = get_mime_for_extension(file_name)
     elif message.content_type == "video":
@@ -280,33 +279,29 @@ def handle_file_message(message, user_id, ai_model):
         file_name = "voice.ogg"
 
     if not file_id:
-        bot.send_message(message.chat.id, "❌ Unsupported file type.")
+        bot.send_message(message.chat.id, "❌ Неподдерживаемый тип файла.")
         return
 
-    # Проверяем поддержку
     if mime_type not in GEMINI_SUPPORTED:
-        # Для ZIP и других архивов
         ext = os.path.splitext(file_name.lower())[1]
         if ext in [".zip", ".rar", ".7z", ".tar"]:
             bot.send_message(message.chat.id,
-                "📦 Archives (ZIP, RAR) cannot be analyzed directly.\n"
-                "Please extract the files and send them individually.")
+                "Архивы (ZIP, RAR) нельзя анализировать напрямую. "
+                "Пожалуйста, распакуй файлы и отправь их по отдельности.")
             return
-        # Для DOCX/XLSX пробуем как текст
         if ext in [".docx", ".xlsx", ".xls", ".doc"]:
             bot.send_message(message.chat.id,
-                "⚠️ Word/Excel files have limited support. "
-                "For best results, save as PDF or TXT and send again.")
+                "Файлы Word/Excel имеют ограниченную поддержку. "
+                "Для лучших результатов сохрани как PDF или TXT.")
             mime_type = "application/octet-stream"
 
     bot.send_chat_action(message.chat.id, "typing")
+    log_session_activity(user_id, "bot")
 
     try:
         file_bytes = download_telegram_file(file_id)
-        history = get_history(user_id)
-
-        # Добавляем в историю что пользователь отправил файл
-        add_message(user_id, "user", f"[File: {file_name}] {caption}")
+        history    = get_history(user_id)
+        add_message(user_id, "user", f"[Файл: {file_name}] {caption}")
 
         if ai_model == "gpt":
             reply = ask_with_file(file_bytes, mime_type, file_name, caption, history, use_pro=False)
@@ -314,38 +309,15 @@ def handle_file_message(message, user_id, ai_model):
             reply = ask_with_file(file_bytes, mime_type, file_name, caption, history, use_pro=True)
 
         add_message(user_id, "assistant", reply)
-
-        # Если AI сгенерировал код — предлагаем скачать как файл
-        if "```" in reply and len(reply) > 200:
-            bot.send_message(message.chat.id, reply)
-            # Извлекаем код из блоков
-            code_blocks = []
-            parts = reply.split("```")
-            for i in range(1, len(parts), 2):
-                block = parts[i]
-                lines = block.split("\n", 1)
-                if len(lines) > 1:
-                    code_blocks.append((lines[0].strip() or "txt", lines[1]))
-            if code_blocks:
-                lang, code = code_blocks[0]
-                ext_map = {"python": "py", "cpp": "cpp", "c": "c", "javascript": "js",
-                           "java": "java", "go": "go", "rust": "rs", "sql": "sql",
-                           "html": "html", "css": "css", "typescript": "ts"}
-                ext = ext_map.get(lang.lower(), lang.lower() or "txt")
-                file_obj = io.BytesIO(code.encode("utf-8"))
-                file_obj.name = f"code.{ext}"
-                bot.send_document(message.chat.id, file_obj,
-                                  caption=f"📄 {file_obj.name}")
-        else:
-            bot.send_message(message.chat.id, reply)
+        bot.send_message(message.chat.id, reply)
 
     except Exception as e:
         error_text = str(e)
         print("File AI error:", e)
         if "429" in error_text or "RESOURCE_EXHAUSTED" in error_text:
-            bot.send_message(message.chat.id, "⏳ Too many requests. Try again in a minute.")
+            bot.send_message(message.chat.id, "Слишком много запросов. Попробуй через минуту.")
         else:
-            bot.send_message(message.chat.id, f"❌ Error analyzing file: {error_text[:150]}")
+            bot.send_message(message.chat.id, f"Ошибка анализа файла: {error_text[:150]}")
 
 
 # ── /start ────────────────────────────────────────────────────────────────
@@ -362,39 +334,227 @@ def start(message):
     is_new = register_user(message.from_user.id, message.from_user.username or "", referred_by)
     if is_new and referred_by:
         try:
-            bot.send_message(referred_by, "🎉 Someone joined via your referral link! +10 coins added.")
+            bot.send_message(referred_by, "Кто-то перешёл по твоей реферальной ссылке! +10 монет зачислено.")
         except:
             pass
-    bot.send_message(message.chat.id, "🔄 Loading...", reply_markup=main_menu_keyboard(message.from_user.id))
+    bot.send_message(message.chat.id, "Загрузка...", reply_markup=main_menu_keyboard(message.from_user.id))
     show_start(message.chat.id, message.from_user.id)
+
+
+# ── /give — выдача подписки / роли ────────────────────────────────────────
+
+@bot.message_handler(commands=["give"])
+def cmd_give(message):
+    if message.from_user.id != OWNER_ID:
+        return
+
+    # Форматы:
+    #   /give @username nova 30d
+    #   /give @username nova forever
+    #   /give @username role sponsor
+    #   /give @username role sponsor 30d
+    #   /give @username remove sub
+    #   /give @username remove role
+
+    parts = message.text.strip().split()
+    # parts[0] = /give, parts[1] = @username, parts[2] = тип, ...
+
+    if len(parts) < 3:
+        bot.send_message(message.chat.id,
+            "Использование:\n"
+            "/give @username nova 30d\n"
+            "/give @username nova forever\n"
+            "/give @username role sponsor\n"
+            "/give @username role sponsor 30d\n"
+            "/give @username remove sub\n"
+            "/give @username remove role"
+        )
+        return
+
+    raw_username = parts[1].lstrip("@")
+    target = get_user_by_username(raw_username)
+
+    if not target:
+        bot.send_message(message.chat.id,
+            f"Пользователь @{raw_username} не найден в базе.\n"
+            "Он должен хотя бы раз написать боту.")
+        return
+
+    target_id = target[0]
+    action    = parts[2].lower()
+
+    # ── Выдача подписки ──
+    if action == "nova":
+        duration = parts[3].lower() if len(parts) > 3 else "30d"
+
+        if duration == "forever":
+            set_subscription(target_id, "forever", "none")
+            set_ai_model(target_id, "gemini")
+            label = "навсегда"
+            expires_str = "none"
+        else:
+            try:
+                days = int(duration.replace("d", "").replace("д", ""))
+            except:
+                bot.send_message(message.chat.id, "Неверный формат срока. Пример: 30d или forever")
+                return
+            until = datetime.now() + timedelta(days=days)
+            until_str = until.strftime("%d.%m.%Y %H:%M")
+            set_subscription(target_id, "custom", until_str)
+            set_ai_model(target_id, "gemini")
+            label = f"{days} дней (до {until_str})"
+            expires_str = until_str
+
+        log_admin_grant(target_id, "subscription", "nova", expires_str, OWNER_ID)
+        bot.send_message(message.chat.id,
+            f"Подписка Elyon Nova выдана @{raw_username} на {label}.")
+        try:
+            bot.send_message(target_id,
+                f"Тебе выдана подписка Elyon Nova на {label}!\n"
+                "Теперь ты можешь использовать расширенную модель.")
+        except:
+            pass
+        return
+
+    # ── Выдача роли ──
+    if action == "role":
+        if len(parts) < 4:
+            bot.send_message(message.chat.id, "Укажи роль. Пример: /give @user role sponsor")
+            return
+        role_name    = parts[3]
+        duration_str = parts[4].lower() if len(parts) > 4 else None
+        expires_str  = "none"
+
+        if duration_str and duration_str != "forever":
+            try:
+                days = int(duration_str.replace("d", "").replace("д", ""))
+                until = datetime.now() + timedelta(days=days)
+                expires_str = until.strftime("%d.%m.%Y %H:%M")
+            except:
+                pass
+
+        set_role(target_id, role_name)
+        log_admin_grant(target_id, "role", role_name, expires_str, OWNER_ID)
+        exp_label = f"до {expires_str}" if expires_str != "none" else "бессрочно"
+        bot.send_message(message.chat.id,
+            f"Роль '{role_name}' выдана @{raw_username} ({exp_label}).")
+        try:
+            bot.send_message(target_id,
+                f"Тебе присвоена роль: {role_name}!")
+        except:
+            pass
+        return
+
+    # ── Снять подписку / роль ──
+    if action == "remove":
+        what = parts[3].lower() if len(parts) > 3 else ""
+        if what == "sub":
+            remove_subscription(target_id)
+            bot.send_message(message.chat.id, f"Подписка @{raw_username} удалена.")
+            try:
+                bot.send_message(target_id, "Твоя подписка Elyon Nova была деактивирована.")
+            except:
+                pass
+        elif what == "role":
+            set_role(target_id, "default user")
+            bot.send_message(message.chat.id, f"Роль @{raw_username} сброшена до 'default user'.")
+            try:
+                bot.send_message(target_id, "Твоя роль была сброшена.")
+            except:
+                pass
+        else:
+            bot.send_message(message.chat.id, "Укажи что снять: sub или role")
+        return
+
+    bot.send_message(message.chat.id,
+        "Неизвестное действие. Используй: nova / role / remove")
+
+
+# ── /pay — выдача монет пользователю ─────────────────────────────────────
+
+@bot.message_handler(commands=["pay"])
+def cmd_pay(message):
+    if message.from_user.id != OWNER_ID:
+        return
+
+    # /pay @username 100
+    parts = message.text.strip().split()
+    if len(parts) < 3:
+        bot.send_message(message.chat.id, "Использование: /pay @username сумма")
+        return
+
+    raw_username = parts[1].lstrip("@")
+    try:
+        amount = int(parts[2])
+        if amount <= 0:
+            raise ValueError
+    except ValueError:
+        bot.send_message(message.chat.id, "Укажи корректную сумму монет (целое положительное число).")
+        return
+
+    target = get_user_by_username(raw_username)
+    if not target:
+        bot.send_message(message.chat.id,
+            f"Пользователь @{raw_username} не найден в базе.")
+        return
+
+    target_id = target[0]
+    add_balance(target_id, amount)
+    new_balance = get_balance(target_id)
+
+    bot.send_message(message.chat.id,
+        f"Начислено {amount} монет пользователю @{raw_username}.\n"
+        f"Новый баланс: {new_balance} монет.")
+    try:
+        bot.send_message(target_id,
+            f"Тебе начислено {amount} монет от администратора!\n"
+            f"Твой баланс: {new_balance} монет.\n"
+            "Монетами можно оплатить подписку в разделе оплаты.")
+    except:
+        pass
 
 
 # ── Панель управления ──────────────────────────────────────────────────────
 
 @bot.message_handler(func=lambda m: m.text == "🛠 Control Panel" and m.from_user.id == OWNER_ID)
 def control_panel(message):
+    send_control_panel(message.chat.id)
+
+
+def send_control_panel(chat_id):
     maintenance = is_maintenance()
     stats = get_stats()
+
+    roles_text = ""
+    for r, cnt in stats.get("roles", {}).items():
+        roles_text += f"  {r}: {cnt}\n"
+
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(
-        types.InlineKeyboardButton("📊 Full user list", callback_data="admin_users"),
-        types.InlineKeyboardButton("💰 Recent payments", callback_data="admin_payments"),
+        types.InlineKeyboardButton("📋 Список пользователей", callback_data="admin_users"),
+        types.InlineKeyboardButton("💰 Последние платежи",    callback_data="admin_payments"),
+        types.InlineKeyboardButton("🔑 Статус API ключей",    callback_data="admin_check_keys"),
+        types.InlineKeyboardButton("🎫 Управление подписками", callback_data="admin_subs_help"),
         types.InlineKeyboardButton(
-            "🔴 Disable bot for users" if not maintenance else "🟢 Enable bot for users",
+            "🔴 Включить тех.работы" if not maintenance else "🟢 Выключить тех.работы",
             callback_data="admin_toggle_maintenance"
         )
     )
+
     bot.send_message(
-        message.chat.id,
-        f"🛠 *Control Panel*\n\n"
-        f"👥 Total users: *{stats['total_users']}*\n"
-        f"💎 Subscribers: *{stats['subscribers']}*\n"
-        f"🆓 Using Core: *{stats['free_users']}*\n"
-        f"⭐ Using Nova: *{stats['pro_users']}*\n"
-        f"💰 Total payments: *{stats['total_payments']}*\n"
-        f"💬 Total messages: *{stats['total_messages']}*\n\n"
-        f"🔧 Maintenance mode: *{'ON 🔴' if maintenance else 'OFF 🟢'}*",
-        parse_mode="Markdown",
+        chat_id,
+        f"🛠 Панель управления\n\n"
+        f"👥 Всего пользователей: {stats['total_users']}\n"
+        f"🆕 Новых сегодня: {stats['new_today']}\n"
+        f"💎 Подписчиков всего: {stats['subscribers']}\n"
+        f"✅ Активных подписок: {stats['active_subs']}\n"
+        f"🆓 Используют Core: {stats['free_users']}\n"
+        f"⭐ Используют Nova: {stats['pro_users']}\n"
+        f"📱 Пользователей Mini App: {stats['miniapp_users']}\n"
+        f"💰 Всего платежей: {stats['total_payments']}\n"
+        f"💬 Всего сообщений: {stats['total_messages']}\n\n"
+        f"Роли:\n{roles_text}"
+        f"🔧 Тех.работы: {'ВКЛ 🔴' if maintenance else 'ВЫКЛ 🟢'}",
         reply_markup=markup
     )
 
@@ -423,6 +583,28 @@ def handle_document(message):
     handle_file_message(message, user_id, user[4])
 
 
+# ── Обработка подарков (тест) ─────────────────────────────────────────────
+
+@bot.message_handler(content_types=["gift"])
+def handle_gift(message):
+    """Принимаем подарок как оплату подписки (тестовая функция)."""
+    ensure_registered(message)
+    user_id = message.from_user.id
+    bot.send_message(
+        message.chat.id,
+        "Подарок получен! Администратор рассмотрит твой платёж и вручную активирует подписку.\n"
+        "Обратись в поддержку если подписка не появилась в течение 24 часов."
+    )
+    try:
+        bot.send_message(
+            OWNER_ID,
+            f"Пользователь @{message.from_user.username or '?'} (ID: {user_id}) "
+            f"отправил подарок как оплату подписки."
+        )
+    except:
+        pass
+
+
 # ── Inline кнопки ─────────────────────────────────────────────────────────
 
 @bot.callback_query_handler(func=lambda c: True)
@@ -434,44 +616,182 @@ def handle_callback(call):
     except:
         pass
 
+    # ── Список всех пользователей ──
     if call.data == "admin_users" and user_id == OWNER_ID:
         users = get_all_users()
         if not users:
-            bot.send_message(chat_id, "No users yet.")
+            bot.send_message(chat_id, "Пользователей пока нет.")
             return
-        text = "👥 *All users:*\n\n"
-        for u in users[:30]:
-            sub = u[5] if u[5] != "none" else "—"
-            text += f"@{u[1] or '?'} | {u[2][:10]} | sub: {sub}\n"
-        if len(users) > 30:
-            text += f"\n...and {len(users)-30} more"
-        bot.send_message(chat_id, text, parse_mode="Markdown")
+        # Разбиваем на страницы по 25
+        text = f"👥 Все пользователи ({len(users)}):\n\n"
+        for u in users[:25]:
+            uname   = f"@{u[1]}" if u[1] else f"ID:{u[0]}"
+            role    = u[3]
+            sub     = u[5] if u[5] != "none" else "—"
+            balance = u[7]
+            text += f"{uname} | {role} | sub: {sub} | 🪙{balance}\n"
+        if len(users) > 25:
+            text += f"\n... и ещё {len(users) - 25} пользователей"
+        bot.send_message(chat_id, text)
         return
 
+    # ── Последние платежи ──
     if call.data == "admin_payments" and user_id == OWNER_ID:
         payments = get_payments(20)
         if not payments:
-            bot.send_message(chat_id, "No payments yet.")
+            bot.send_message(chat_id, "Платежей пока нет.")
             return
-        text = "💰 *Recent payments:*\n\n"
+        text = "💰 Последние платежи:\n\n"
         for p in payments:
-            text += f"@{p[0] or '?'} — {p[1]} via {p[2]} ({p[3]}₽) — {p[4]}\n"
-        bot.send_message(chat_id, text, parse_mode="Markdown")
+            text += f"@{p[0] or '?'} — {p[1]} через {p[2]} ({p[3]}₽) — {p[4]}\n"
+        bot.send_message(chat_id, text)
         return
 
+    # ── Статус API ключей ──
+    if call.data == "admin_check_keys" and user_id == OWNER_ID:
+        bot.send_message(chat_id, "Проверяю ключи, подожди...")
+        try:
+            status = check_keys_status()
+            text = "🔑 Статус API ключей:\n\n"
+            text += "Free ключи (Elyon Core):\n"
+            for k in status["free"]:
+                emoji = "✅" if k["status"] == "ok" else ("🔴" if k["status"] == "exhausted" else "⚠️")
+                text += f"  {emoji} {k['key']} — {k['status']}\n"
+            text += "\nPro ключи (Elyon Nova):\n"
+            for k in status["pro"]:
+                emoji = "✅" if k["status"] == "ok" else ("🔴" if k["status"] == "exhausted" else "⚠️")
+                text += f"  {emoji} {k['key']} — {k['status']}\n"
+        except Exception as e:
+            text = f"Ошибка проверки ключей: {e}"
+        bot.send_message(chat_id, text)
+        return
+
+    # ── Помощь по управлению подписками ──
+    if call.data == "admin_subs_help" and user_id == OWNER_ID:
+        bot.send_message(
+            chat_id,
+            "🎫 Управление подписками и ролями:\n\n"
+            "Выдать подписку:\n"
+            "/give @username nova 30d\n"
+            "/give @username nova forever\n\n"
+            "Снять подписку:\n"
+            "/give @username remove sub\n\n"
+            "Выдать роль:\n"
+            "/give @username role sponsor\n"
+            "/give @username role beta-tester 30d\n\n"
+            "Сбросить роль:\n"
+            "/give @username remove role\n\n"
+            "Выдать монеты:\n"
+            "/pay @username 100"
+        )
+        return
+
+    # ── Тех.работы — ТОЛЬКО owner может переключить ──
     if call.data == "admin_toggle_maintenance" and user_id == OWNER_ID:
         new_val = "0" if is_maintenance() else "1"
         set_setting("maintenance", new_val)
-        status = "🔴 ON" if new_val == "1" else "🟢 OFF"
-        bot.send_message(chat_id, f"🔧 Maintenance mode: *{status}*", parse_mode="Markdown")
+        status = "ВКЛ 🔴" if new_val == "1" else "ВЫКЛ 🟢"
+        markup = types.InlineKeyboardMarkup()
+        if new_val == "1":
+            markup.add(types.InlineKeyboardButton(
+                "🟢 Выключить тех.работы",
+                callback_data="admin_toggle_maintenance"
+            ))
+        bot.send_message(chat_id, f"Тех.работы: {status}", reply_markup=markup if new_val == "1" else None)
         return
 
+    # ── Wata меню ──
+    if call.data == "pay_wata_menu":
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        for plan_key, plan_data in PRICES.items():
+            markup.add(types.InlineKeyboardButton(
+                f"💳 {plan_data['label'].replace('⭐', '₽')} ({plan_data['rub']} ₽)",
+                callback_data=f"pay_wata_{plan_key}"
+            ))
+        markup.add(types.InlineKeyboardButton("◀️ Назад", callback_data="choose_pro"))
+        bot.send_message(
+            chat_id,
+            "💳 Оплата через Wata (карта РФ)\n\nВыбери тариф:",
+            reply_markup=markup
+        )
+        return
+
+    if call.data.startswith("pay_wata_"):
+        plan = call.data.replace("pay_wata_", "")
+        price = PRICES.get(plan)
+        if not price:
+            bot.send_message(chat_id, "Неизвестный тариф.")
+            return
+        if not WATA_TOKEN:
+            bot.send_message(chat_id,
+                "Оплата через Wata временно недоступна. "
+                "Попробуй другой способ оплаты.")
+            return
+        try:
+            bot.send_invoice(
+                chat_id,
+                title=f"Elyon Nova — {price['label']}",
+                description="Доступ к Elyon Nova (расширенный AI)",
+                invoice_payload=f"wata_pro_{plan}",
+                provider_token=WATA_TOKEN,
+                currency="RUB",
+                prices=[types.LabeledPrice(price["label"], price["rub"] * 100)]
+            )
+        except Exception as e:
+            bot.send_message(chat_id, f"Ошибка создания платежа Wata: {e}")
+        return
+
+    # ── Подарок (тест) ──
+    if call.data == "pay_gift_menu":
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        for plan_key, plan_data in PRICES.items():
+            markup.add(types.InlineKeyboardButton(
+                f"🎁 {plan_key.upper()} — {plan_data['stars']} звёзд",
+                callback_data=f"pay_gift_info_{plan_key}"
+            ))
+        markup.add(types.InlineKeyboardButton("◀️ Назад", callback_data="choose_pro"))
+        bot.send_message(
+            chat_id,
+            "🎁 Оплата подарком [TEST]\n\n"
+            "Это тестовая функция. Отправь боту подарок на сумму звёзд соответствующую тарифу.\n"
+            "После отправки подарка администратор вручную активирует подписку.\n\n"
+            "Выбери тариф:",
+            reply_markup=markup
+        )
+        return
+
+    if call.data.startswith("pay_gift_info_"):
+        plan = call.data.replace("pay_gift_info_", "")
+        price = PRICES.get(plan)
+        if price:
+            bot.send_message(
+                chat_id,
+                f"🎁 Тариф: {price['label']}\n\n"
+                f"Отправь боту подарок на {price['stars']} звёзд.\n"
+                "После отправки подарка напиши /start и обратись к администратору."
+            )
+        return
+
+    # ── Beta-tester за 50 звёзд ──
+    if call.data == "buy_beta_tester":
+        bot.send_invoice(
+            chat_id,
+            title="Роль Beta-Tester",
+            description="Получи роль Beta-Tester в Elyon AI",
+            invoice_payload=f"beta_tester_{user_id}",
+            provider_token="",
+            currency="XTR",
+            prices=[types.LabeledPrice("Beta-Tester роль", BETA_TESTER_STARS)]
+        )
+        return
+
+    # ── Custom days ──
     if call.data == "pay_custom":
         user_states[user_id] = {"state": "waiting_custom_days"}
         markup = types.InlineKeyboardMarkup()
-        markup.add(types.InlineKeyboardButton("◀️ Back", callback_data="choose_pro"))
-        bot.send_message(chat_id, "📅 *Custom subscription*\n\nEnter the number of days (1–365):",
-                         parse_mode="Markdown", reply_markup=markup)
+        markup.add(types.InlineKeyboardButton("◀️ Назад", callback_data="choose_pro"))
+        bot.send_message(chat_id, "Произвольная подписка\n\nВведи количество дней (1–365):",
+                         reply_markup=markup)
         return
 
     if call.data == "back_start":
@@ -479,14 +799,14 @@ def handle_callback(call):
     elif call.data == "choose_free":
         set_ai_model(user_id, "gpt")
         clear_history(user_id)
-        bot.send_message(chat_id, "✅ *Elyon Core* activated!\n\nFast answers, always free.",
-                         parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
+        bot.send_message(chat_id, "Elyon Core активирован!\n\nБыстрый бесплатный AI. Начинай общение!",
+                         reply_markup=main_menu_keyboard(user_id))
     elif call.data == "choose_pro":
         if has_active_sub(user_id):
             set_ai_model(user_id, "gemini")
             clear_history(user_id)
-            bot.send_message(chat_id, "✅ *Elyon Nova* activated!\n\nDeep thinking mode.",
-                             parse_mode="Markdown", reply_markup=main_menu_keyboard(user_id))
+            bot.send_message(chat_id, "Elyon Nova активирован!\n\nRежим глубокого мышления.",
+                             reply_markup=main_menu_keyboard(user_id))
         else:
             show_payment_options(chat_id, user_id)
     elif call.data == "pay_virtual_menu":
@@ -498,33 +818,33 @@ def handle_callback(call):
             activate_subscription(user_id, plan, chat_id)
             log_payment(user_id, call.from_user.username or "", plan, "coins", str(cost))
         else:
-            bot.send_message(chat_id, "❌ Not enough coins.")
+            bot.send_message(chat_id, "Недостаточно монет.")
     elif call.data.startswith("pay_stars_custom_"):
         days = int(call.data.replace("pay_stars_custom_", ""))
         rub, stars, _ = calc_custom_price(days)
-        label = f"{days} days — {stars} ⭐"
-        bot.send_invoice(chat_id, title=f"Elyon Nova — {days} days",
-                         description=f"Access to Elyon Nova for {days} days",
+        label = f"{days} дней — {stars} ⭐"
+        bot.send_invoice(chat_id, title=f"Elyon Nova — {days} дней",
+                         description=f"Доступ к Elyon Nova на {days} дней",
                          invoice_payload=f"custom_{days}", provider_token="",
                          currency="XTR", prices=[types.LabeledPrice(label, stars)])
     elif call.data.startswith("pay_crypto_custom_"):
         days = int(call.data.replace("pay_crypto_custom_", ""))
         rub, _, usdt = calc_custom_price(days)
-        label = f"{days} days — {rub} ₽"
+        label = f"{days} дней — {rub} ₽"
         invoice = create_crypto_invoice(usdt, user_id, f"custom_{days}", label)
         if invoice:
             markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton(f"💳 Pay {label}", url=invoice["pay_url"]))
-            markup.add(types.InlineKeyboardButton("◀️ Back", callback_data="back_start"))
-            bot.send_message(chat_id, f"💳 *Payment via CryptoBot*\n*{label}*\n\nAfter payment press /check",
-                             parse_mode="Markdown", reply_markup=markup)
+            markup.add(types.InlineKeyboardButton(f"Оплатить {label}", url=invoice["pay_url"]))
+            markup.add(types.InlineKeyboardButton("◀️ Назад", callback_data="back_start"))
+            bot.send_message(chat_id, f"Оплата через CryptoBot\n{label}\n\nПосле оплаты нажми /check",
+                             reply_markup=markup)
         else:
-            bot.send_message(chat_id, "❌ Payment error. Try again later.")
+            bot.send_message(chat_id, "Ошибка создания платежа. Попробуй позже.")
     elif call.data.startswith("pay_stars_"):
         plan = call.data.replace("pay_stars_", "")
         price = PRICES[plan]
         bot.send_invoice(chat_id, title=f"Elyon Nova — {price['label']}",
-                         description="Access to Elyon Nova (deep thinking AI)",
+                         description="Доступ к Elyon Nova (AI с глубоким мышлением)",
                          invoice_payload=f"pro_{plan}", provider_token="",
                          currency="XTR", prices=[types.LabeledPrice(price["label"], price["stars"])])
     elif call.data.startswith("pay_crypto_"):
@@ -533,12 +853,12 @@ def handle_callback(call):
         invoice = create_crypto_invoice(price["amount"], user_id, plan)
         if invoice:
             markup = types.InlineKeyboardMarkup()
-            markup.add(types.InlineKeyboardButton(f"💳 Pay {price['label']}", url=invoice["pay_url"]))
-            markup.add(types.InlineKeyboardButton("◀️ Back", callback_data="back_start"))
-            bot.send_message(chat_id, f"💳 *Payment via CryptoBot*\n*{price['label']}*\n\nAfter payment press /check",
-                             parse_mode="Markdown", reply_markup=markup)
+            markup.add(types.InlineKeyboardButton(f"Оплатить {price['label']}", url=invoice["pay_url"]))
+            markup.add(types.InlineKeyboardButton("◀️ Назад", callback_data="back_start"))
+            bot.send_message(chat_id, f"Оплата через CryptoBot\n{price['label']}\n\nПосле оплаты нажми /check",
+                             reply_markup=markup)
         else:
-            bot.send_message(chat_id, "❌ Payment error. Try again later.")
+            bot.send_message(chat_id, "Ошибка создания платежа. Попробуй позже.")
 
 
 # ── Оплата ────────────────────────────────────────────────────────────────
@@ -552,15 +872,41 @@ def pre_checkout(query):
 def payment_success(message):
     user_id = message.from_user.id
     payload = message.successful_payment.invoice_payload
+
+    # Beta-tester
+    if payload.startswith("beta_tester_"):
+        set_role(user_id, "beta-tester")
+        log_payment(user_id, message.from_user.username or "", "beta-tester", "stars",
+                    str(BETA_TESTER_STARS))
+        bot.send_message(
+            message.chat.id,
+            f"Поздравляем! Роль Beta-Tester получена!\n"
+            "Теперь в твоём профиле отображается специальная роль.",
+            reply_markup=main_menu_keyboard(user_id)
+        )
+        return
+
+    # Wata
+    if payload.startswith("wata_pro_"):
+        plan = payload.replace("wata_pro_", "")
+        activate_subscription(user_id, plan, message.chat.id)
+        log_payment(user_id, message.from_user.username or "", plan, "wata",
+                    str(PRICES.get(plan, {}).get("rub", "?")))
+        return
+
+    # Stars custom
     if payload.startswith("custom_"):
         days = int(payload.replace("custom_", ""))
         rub, stars, _ = calc_custom_price(days)
-        activate_subscription(user_id, "custom", message.chat.id, days=days, label=f"{days} days")
+        activate_subscription(user_id, "custom", message.chat.id, days=days, label=f"{days} дней")
         log_payment(user_id, message.from_user.username or "", f"custom_{days}d", "stars", str(stars))
-    else:
-        plan = payload.replace("pro_", "")
-        activate_subscription(user_id, plan, message.chat.id)
-        log_payment(user_id, message.from_user.username or "", plan, "stars", str(PRICES[plan]["stars"]))
+        return
+
+    # Stars plan
+    plan = payload.replace("pro_", "")
+    activate_subscription(user_id, plan, message.chat.id)
+    log_payment(user_id, message.from_user.username or "", plan, "stars",
+                str(PRICES.get(plan, {}).get("stars", "?")))
 
 
 @bot.message_handler(commands=["check"])
@@ -581,17 +927,17 @@ def check_crypto_payment(message):
                     if plan_part.startswith("custom_"):
                         days = int(plan_part.replace("custom_", ""))
                         rub, _, usdt = calc_custom_price(days)
-                        activate_subscription(user_id, "custom", message.chat.id, days=days, label=f"{days} days")
+                        activate_subscription(user_id, "custom", message.chat.id, days=days, label=f"{days} дней")
                         log_payment(user_id, message.from_user.username or "", f"custom_{days}d", "crypto", str(usdt))
                     else:
                         activate_subscription(user_id, plan_part, message.chat.id)
                         log_payment(user_id, message.from_user.username or "", plan_part, "crypto",
                                     CRYPTO_PRICES.get(plan_part, {}).get("amount", "?"))
                     return
-        bot.send_message(message.chat.id, "❌ Payment not found. Try again in a minute.")
+        bot.send_message(message.chat.id, "Платёж не найден. Попробуй через минуту.")
     except Exception as e:
         print("Check error:", e)
-        bot.send_message(message.chat.id, "❌ Payment verification error.")
+        bot.send_message(message.chat.id, "Ошибка проверки платежа.")
 
 
 # ── Нижнее меню ───────────────────────────────────────────────────────────
@@ -604,8 +950,7 @@ def menu_chat(message):
         return
     model = "🆓 Elyon Core" if user[4] == "gpt" else "⭐ Elyon Nova"
     bot.send_message(message.chat.id,
-                     f"Current model: *{model}*\n\nWrite your message or send a file!",
-                     parse_mode="Markdown")
+                     f"Текущая модель: {model}\n\nНапиши сообщение или отправь файл!")
 
 
 @bot.message_handler(func=lambda m: m.text == "👤 Personal account")
@@ -620,25 +965,38 @@ def menu_profile(message):
     balance   = get_balance(user_id)
     ref_count = get_referral_count(user_id)
     ref_link  = f"https://t.me/{BOT_USERNAME}?start={user_id}"
+
     if sub_type == "none":
-        sub_info = "❌ No subscription"
+        sub_info = "Нет подписки"
     elif sub_type == "forever":
-        sub_info = "♾️ Forever"
+        sub_info = "Навсегда"
     else:
-        labels = {"month": "30 days", "halfyear": "6 months", "custom": "Custom"}
-        sub_info = f"✅ {labels.get(sub_type, sub_type)} (until {sub_until})"
-    role_emoji = "👑" if user[3] == "owner" else "👤"
+        labels = {"month": "30 дней", "halfyear": "6 месяцев", "custom": "Custom"}
+        sub_info = f"{labels.get(sub_type, sub_type)} (до {sub_until})"
+
+    role_emoji = "👑" if user[3] == "owner" else ("🔬" if user[3] == "beta-tester" else "👤")
+
+    # Кнопка beta-tester если ещё нет
+    markup = None
+    if user[3] not in ("owner", "beta-tester"):
+        markup = types.InlineKeyboardMarkup()
+        markup.add(types.InlineKeyboardButton(
+            "🔬 Купить роль Beta-Tester за 50 звёзд",
+            callback_data="buy_beta_tester"
+        ))
+
     bot.send_message(
         message.chat.id,
-        f"👤 Personal Account\n\n"
-        f"Username: @{user[1] or 'not specified'}\n"
-        f"Registered: {user[2]}\n"
-        f"Role: {role_emoji} {user[3]}\n"
-        f"Subscription: {sub_info}\n\n"
-        f"🪙 Coins balance: {balance}\n"
-        f"👥 Referrals: {ref_count}\n\n"
-        f"🔗 Your referral link:\n{ref_link}\n\n"
-        f"Each friend who joins gives you +10 coins"
+        f"Личный кабинет\n\n"
+        f"Пользователь: @{user[1] or 'не указан'}\n"
+        f"Зарегистрирован: {user[2]}\n"
+        f"Роль: {role_emoji} {user[3]}\n"
+        f"Подписка: {sub_info}\n\n"
+        f"Баланс монет: {balance}\n"
+        f"Рефералов: {ref_count}\n\n"
+        f"Реферальная ссылка:\n{ref_link}\n\n"
+        f"За каждого приглашённого друга +10 монет",
+        reply_markup=markup
     )
 
 
@@ -647,8 +1005,7 @@ def switch_free(message):
     register_user(message.from_user.id, message.from_user.username or "")
     set_ai_model(message.from_user.id, "gpt")
     clear_history(message.from_user.id)
-    bot.send_message(message.chat.id, "✅ Switched to *Elyon Core*\n\nFast free AI. Start chatting!",
-                     parse_mode="Markdown")
+    bot.send_message(message.chat.id, "Elyon Core активирован!\n\nБыстрый бесплатный AI. Начинай общение!")
 
 
 @bot.message_handler(func=lambda m: m.text == "⭐ Elyon Nova")
@@ -658,8 +1015,7 @@ def switch_pro(message):
     if has_active_sub(user_id):
         set_ai_model(user_id, "gemini")
         clear_history(user_id)
-        bot.send_message(message.chat.id, "✅ Switched to *Elyon Nova*\n\nDeep thinking AI.",
-                         parse_mode="Markdown")
+        bot.send_message(message.chat.id, "Elyon Nova активирован!\n\nAI с глубоким мышлением.")
     else:
         show_payment_options(message.chat.id, user_id)
 
@@ -677,29 +1033,29 @@ def handle_message(message):
     ensure_registered(message)
     user_id = message.from_user.id
 
+    # Ожидание ввода кастомных дней
     if user_id in user_states and user_states[user_id].get("state") == "waiting_custom_days":
         try:
             days = int(message.text.strip())
             if days < 1 or days > 365:
                 raise ValueError
         except ValueError:
-            bot.send_message(message.chat.id, "❌ Please enter a number between 1 and 365.")
+            bot.send_message(message.chat.id, "Введи число от 1 до 365.")
             return
         del user_states[user_id]
         rub, stars, usdt = calc_custom_price(days)
         markup = types.InlineKeyboardMarkup(row_width=1)
         markup.add(
-            types.InlineKeyboardButton(f"⭐ Pay {stars} stars", callback_data=f"pay_stars_custom_{days}"),
-            types.InlineKeyboardButton(f"💳 Pay {rub} ₽ via CryptoBot", callback_data=f"pay_crypto_custom_{days}"),
-            types.InlineKeyboardButton("◀️ Back", callback_data="back_start"),
+            types.InlineKeyboardButton(f"Оплатить {stars} звёздами", callback_data=f"pay_stars_custom_{days}"),
+            types.InlineKeyboardButton(f"Оплатить {rub} ₽ через CryptoBot", callback_data=f"pay_crypto_custom_{days}"),
+            types.InlineKeyboardButton("◀️ Назад", callback_data="back_start"),
         )
         bot.send_message(
             message.chat.id,
-            f"📅 *{days} days subscription*\n\n"
-            f"⭐ Stars: *{stars}*\n"
-            f"💳 Rubles: *{rub} ₽*\n\n"
-            f"Choose payment method:",
-            parse_mode="Markdown",
+            f"{days} дней подписки\n\n"
+            f"Звёзды: {stars}\n"
+            f"Рубли: {rub} ₽\n\n"
+            f"Выбери способ оплаты:",
             reply_markup=markup
         )
         return
@@ -709,8 +1065,7 @@ def handle_message(message):
 
     if is_maintenance() and user_id != OWNER_ID:
         bot.send_message(message.chat.id,
-                         "🔧 *Maintenance in progress*\n\nElyon AI is temporarily unavailable.",
-                         parse_mode="Markdown")
+                         "Технические работы\n\nElyon AI временно недоступен.")
         return
 
     user = get_user(user_id)
@@ -724,49 +1079,29 @@ def handle_message(message):
         return
 
     if ai_model == "gemini" and not has_active_sub(user_id):
-        bot.send_message(message.chat.id, "⚠️ Subscription expired.")
+        bot.send_message(message.chat.id, "Подписка истекла.")
         show_payment_options(message.chat.id, user_id)
         return
 
     bot.send_chat_action(message.chat.id, "typing")
     add_message(user_id, "user", message.text)
+    log_session_activity(user_id, "bot")
     history = get_history(user_id)
 
     try:
         reply = ask_gpt(history) if ai_model == "gpt" else ask_gemini(history)
         add_message(user_id, "assistant", reply)
-
-        # Автоматически отправляем код как файл если ответ содержит большой блок кода
-        if "```" in reply and len(reply) > 300:
-            bot.send_message(message.chat.id, reply)
-            parts = reply.split("```")
-            for i in range(1, len(parts), 2):
-                block = parts[i]
-                lines = block.split("\n", 1)
-                if len(lines) > 1 and len(lines[1].strip()) > 50:
-                    lang = lines[0].strip().lower()
-                    code = lines[1]
-                    ext_map = {"python": "py", "cpp": "cpp", "c": "c", "javascript": "js",
-                               "java": "java", "go": "go", "rust": "rs", "sql": "sql",
-                               "html": "html", "css": "css", "typescript": "ts",
-                               "bash": "sh", "shell": "sh"}
-                    ext = ext_map.get(lang, lang or "txt")
-                    file_obj = io.BytesIO(code.encode("utf-8"))
-                    file_obj.name = f"elyon_code.{ext}"
-                    bot.send_document(message.chat.id, file_obj, caption=f"📄 {file_obj.name}")
-                    break  # отправляем только первый блок кода
-        else:
-            bot.send_message(message.chat.id, reply)
+        bot.send_message(message.chat.id, reply)
 
     except Exception as e:
         error_text = str(e)
         print("AI error:", e)
         if "429" in error_text or "RESOURCE_EXHAUSTED" in error_text:
-            bot.send_message(message.chat.id, "⏳ Too many requests. Try again in a minute.")
+            bot.send_message(message.chat.id, "Слишком много запросов. Попробуй через минуту.")
         elif "404" in error_text or "NOT_FOUND" in error_text:
-            bot.send_message(message.chat.id, "❌ Model unavailable. Contact administrator.")
+            bot.send_message(message.chat.id, "Модель недоступна. Обратитесь к администратору.")
         else:
-            bot.send_message(message.chat.id, f"❌ {error_text[:200]}")
+            bot.send_message(message.chat.id, f"Ошибка: {error_text[:200]}")
 
 
 # ── Flask API ─────────────────────────────────────────────────────────────
@@ -778,18 +1113,20 @@ CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=False)
 def after_request(response):
     response.headers.add("Access-Control-Allow-Origin", "*")
     response.headers.add("Access-Control-Allow-Headers", "Content-Type,Authorization")
-    response.headers.add("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+    response.headers.add("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
     return response
+
 
 @app.route("/api/chat", methods=["POST", "OPTIONS"])
 def api_chat():
     if request.method == "OPTIONS":
         return "", 204
     try:
-        data = request.json
+        data     = request.json
         user_id  = data.get("user_id")
         model    = data.get("model", "gpt")
         messages = data.get("messages", [])
+        chat_id  = data.get("chat_id")
         if not user_id or not messages:
             return jsonify({"error": "Missing user_id or messages"}), 400
         if is_maintenance() and user_id != OWNER_ID:
@@ -800,9 +1137,11 @@ def api_chat():
             reply = ask_gemini(messages)
         else:
             reply = ask_gpt(messages)
+        log_session_activity(user_id, "miniapp")
         return jsonify({"reply": reply})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
 
 @app.route("/api/user/<int:user_id>", methods=["GET", "OPTIONS"])
 def api_user(user_id):
@@ -812,17 +1151,55 @@ def api_user(user_id):
     if not user:
         return jsonify({"error": "User not found"}), 404
     return jsonify({
-        "user_id":   user[0],
-        "username":  user[1],
-        "role":      user[3],
-        "ai_model":  user[4],
-        "sub_type":  user[5],
-        "sub_until": user[6],
-        "balance":   get_balance(user_id),
-        "referrals": get_referral_count(user_id),
-        "has_sub":   has_active_sub(user_id),
-        "ref_link":  f"https://t.me/{BOT_USERNAME}?start={user_id}"
+        "user_id":          user[0],
+        "username":         user[1],
+        "role":             user[3],
+        "ai_model":         user[4],
+        "sub_type":         user[5],
+        "sub_until":        user[6],
+        "balance":          get_balance(user_id),
+        "referrals":        get_referral_count(user_id),
+        "has_sub":          has_active_sub(user_id),
+        "ref_link":         f"https://t.me/{BOT_USERNAME}?start={user_id}",
+        "purchase_history": [list(p) for p in get_user_purchase_history(user_id)],
     })
+
+
+# ── Mini App — чаты (сохранение на сервере) ───────────────────────────────
+
+@app.route("/api/chats/<int:user_id>", methods=["GET", "OPTIONS"])
+def api_get_chats(user_id):
+    if request.method == "OPTIONS":
+        return "", 204
+    chats = get_mini_app_chats(user_id)
+    return jsonify({"chats": chats})
+
+
+@app.route("/api/chats/<int:user_id>", methods=["POST", "OPTIONS"])
+def api_save_chat(user_id):
+    if request.method == "OPTIONS":
+        return "", 204
+    try:
+        data     = request.json
+        chat_id  = data.get("chat_id")
+        title    = data.get("title", "New chat")
+        model    = data.get("model", "gpt")
+        messages = data.get("messages", [])
+        if not chat_id:
+            return jsonify({"error": "Missing chat_id"}), 400
+        save_mini_app_chat(user_id, chat_id, title, model, messages)
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/chats/<int:user_id>/<chat_id>", methods=["DELETE", "OPTIONS"])
+def api_delete_chat(user_id, chat_id):
+    if request.method == "OPTIONS":
+        return "", 204
+    delete_mini_app_chat(user_id, chat_id)
+    return jsonify({"ok": True})
+
 
 @app.route("/api/file_b64", methods=["POST", "OPTIONS"])
 def api_file_b64():
@@ -830,8 +1207,8 @@ def api_file_b64():
         return "", 204
     try:
         import base64 as b64
-        import json
-        data = request.json
+        import json as json_lib
+        data      = request.json
         user_id   = data.get("user_id")
         model     = data.get("model", "gpt")
         prompt    = data.get("prompt", "Проанализируй этот файл")
@@ -839,25 +1216,18 @@ def api_file_b64():
         file_type = data.get("file_type", "application/octet-stream")
         file_b64  = data.get("file_data", "")
         history   = data.get("history", [])
-
         if not user_id:
             return jsonify({"error": "Missing user_id"}), 400
-
         user_id = int(user_id)
-
         if is_maintenance() and user_id != OWNER_ID:
             return jsonify({"error": "Maintenance in progress"}), 503
-
         if model == "gemini" and not has_active_sub(user_id):
             return jsonify({"error": "No active subscription"}), 403
-
         file_bytes = b64.b64decode(file_b64)
-
-        # Определяем mime по расширению если не задан
-        mime_type = file_type
+        mime_type  = file_type
         if not mime_type or mime_type == "application/octet-stream":
             ext = os.path.splitext(file_name.lower())[1]
-            text_exts = {
+            mime_map = {
                 ".py": "text/x-python", ".js": "text/javascript",
                 ".cpp": "text/x-c++", ".c": "text/x-c",
                 ".java": "text/x-java", ".txt": "text/plain",
@@ -868,12 +1238,11 @@ def api_file_b64():
                 ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                 ".webp": "image/webp", ".pdf": "application/pdf",
             }
-            mime_type = text_exts.get(ext, "text/plain")
-
+            mime_type = mime_map.get(ext, "text/plain")
         use_pro = model == "gemini"
         reply = ask_with_file(file_bytes, mime_type, file_name, prompt, history, use_pro=use_pro)
+        log_session_activity(user_id, "miniapp")
         return jsonify({"reply": reply})
-
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -883,36 +1252,28 @@ def api_file():
     if request.method == "OPTIONS":
         return "", 204
     try:
-        user_id  = request.form.get("user_id")
-        model    = request.form.get("model", "gpt")
-        prompt   = request.form.get("prompt", "Проанализируй этот файл")
+        import json as json_lib
+        user_id     = request.form.get("user_id")
+        model       = request.form.get("model", "gpt")
+        prompt      = request.form.get("prompt", "Проанализируй этот файл")
         history_raw = request.form.get("history", "[]")
-        import json
-        history = json.loads(history_raw)
-
+        history     = json_lib.loads(history_raw)
         if not user_id:
             return jsonify({"error": "Missing user_id"}), 400
-
         user_id = int(user_id)
-
         if is_maintenance() and user_id != OWNER_ID:
             return jsonify({"error": "Maintenance in progress"}), 503
-
         if model == "gemini" and not has_active_sub(user_id):
             return jsonify({"error": "No active subscription"}), 403
-
         if "file" not in request.files:
             return jsonify({"error": "No file provided"}), 400
-
-        f = request.files["file"]
+        f          = request.files["file"]
         file_bytes = f.read()
-        file_name = f.filename or "file"
-        mime_type = f.content_type or "application/octet-stream"
-
-        # Определяем mime по расширению если не задан
+        file_name  = f.filename or "file"
+        mime_type  = f.content_type or "application/octet-stream"
         if mime_type == "application/octet-stream":
             ext = os.path.splitext(file_name.lower())[1]
-            text_exts = {
+            mime_map = {
                 ".py": "text/x-python", ".js": "text/javascript",
                 ".cpp": "text/x-c++", ".c": "text/x-c",
                 ".java": "text/x-java", ".txt": "text/plain",
@@ -920,12 +1281,10 @@ def api_file():
                 ".json": "application/json", ".html": "text/html",
                 ".css": "text/css", ".sql": "text/plain",
             }
-            mime_type = text_exts.get(ext, "text/plain")
-
+            mime_type = mime_map.get(ext, "text/plain")
         use_pro = model == "gemini"
         reply = ask_with_file(file_bytes, mime_type, file_name, prompt, history, use_pro=use_pro)
         return jsonify({"reply": reply})
-
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -941,6 +1300,7 @@ def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port, debug=False)
 
+
 def keep_alive():
     import time
     url = os.environ.get("RENDER_EXTERNAL_URL", "https://elyon-bot.onrender.com")
@@ -951,6 +1311,7 @@ def keep_alive():
             print("keep_alive ping sent")
         except Exception as e:
             print(f"keep_alive error: {e}")
+
 
 try:
     print("bot is running...")
