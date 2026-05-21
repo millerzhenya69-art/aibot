@@ -618,17 +618,23 @@ def handle_callback(call):
         if not users:
             bot.send_message(chat_id, "Пользователей пока нет.")
             return
-        # Разбиваем на страницы по 25
-        text = f"👥 Все пользователи ({len(users)}):\n\n"
-        for u in users[:25]:
+        lines = [f"👥 Всего пользователей: {len(users)}\n"]
+        for u in users:
             uname   = f"@{u[1]}" if u[1] else f"ID:{u[0]}"
-            role    = u[3]
+            role    = u[3] or "—"
             sub     = u[5] if u[5] != "none" else "—"
-            balance = u[7]
-            text += f"{uname} | {role} | sub: {sub} | 🪙{balance}\n"
-        if len(users) > 25:
-            text += f"\n... и ещё {len(users) - 25} пользователей"
-        bot.send_message(chat_id, text)
+            balance = u[7] if len(u) > 7 else 0
+            lines.append(f"{uname} | {role} | {sub} | 🪙{balance}")
+        # Разбиваем на части по 3500 символов (лимит TG — 4096)
+        chunk = ""
+        for line in lines:
+            if len(chunk) + len(line) + 1 > 3500:
+                bot.send_message(chat_id, chunk)
+                chunk = line + "\n"
+            else:
+                chunk += line + "\n"
+        if chunk:
+            bot.send_message(chat_id, chunk)
         return
 
     # ── Последние платежи ──
