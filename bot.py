@@ -41,6 +41,14 @@ init_db()
 
 user_states = {}
 
+# ── Тест-режим для owner ──────────────────────────────────────────────────
+# Когда включён — owner проходит все проверки как обычный пользователь
+owner_test_mode = False
+
+def is_privileged(user_id):
+    """Owner без тест-режима — обходит все проверки."""
+    return user_id == OWNER_ID and not owner_test_mode
+
 # ── Обязательные каналы для подписки ─────────────────────────────────────
 
 REQUIRED_CHANNELS = [
@@ -368,8 +376,8 @@ def handle_file_message(message, user_id, ai_model):
 def start(message):
     user_id = message.from_user.id
 
-    # Owner всегда проходит без проверки
-    if user_id != OWNER_ID and not is_subscribed(user_id):
+    # Owner без тест-режима — пропускаем проверку
+    if not is_privileged(user_id) and not is_subscribed(user_id):
         args = message.text.split()
         if len(args) > 1:
             user_states[user_id] = {"pending_ref": args[1]}
@@ -574,7 +582,26 @@ def cmd_pay(message):
         pass
 
 
-# ── Панель управления ──────────────────────────────────────────────────────
+# ── /testmode — переключение тест-режима для owner ────────────────────────
+
+@bot.message_handler(commands=["testmode"])
+def cmd_testmode(message):
+    global owner_test_mode
+    if message.from_user.id != OWNER_ID:
+        return
+    owner_test_mode = not owner_test_mode
+    status = "ВКЛ 🧪" if owner_test_mode else "ВЫКЛ 👑"
+    bot.send_message(
+        message.chat.id,
+        f"Тест-режим: {status}\n\n"
+        + ("Теперь ты проходишь все проверки как обычный пользователь.\n"
+           "Лимиты, подписка на каналы — всё активно.\n"
+           "/testmode — чтобы вернуться в режим owner."
+           if owner_test_mode else
+           "Вернулся в режим owner. Все проверки отключены.")
+    )
+
+
 
 @bot.message_handler(func=lambda m: m.text == "🛠 Control Panel" and m.from_user.id == OWNER_ID)
 def control_panel(message):
@@ -1093,8 +1120,8 @@ def handle_message(message):
     ensure_registered(message)
     user_id = message.from_user.id
 
-    # Проверка подписки на каналы (кроме owner)
-    if user_id != OWNER_ID and not is_subscribed(user_id):
+    # Проверка подписки на каналы
+    if not is_privileged(user_id) and not is_subscribed(user_id):
         send_subscribe_prompt(message.chat.id)
         return
 
@@ -1128,7 +1155,7 @@ def handle_message(message):
     if message.text and message.text in MENU_TEXTS:
         return
 
-    if is_maintenance() and user_id != OWNER_ID:
+    if is_maintenance() and not is_privileged(user_id):
         bot.send_message(message.chat.id,
                          "Технические работы\n\nElyon AI временно недоступен.")
         return
@@ -1148,10 +1175,10 @@ def handle_message(message):
         show_payment_options(message.chat.id, user_id)
         return
 
-    # Проверка дневного лимита
+    # Проверка дневного лимита (в тест-режиме owner тоже проверяется)
     is_pro = (ai_model == "gemini")
     allowed, current, limit = check_daily_limit(user_id, is_pro)
-    if not allowed:
+    if not allowed and not (user_id == OWNER_ID and not owner_test_mode):
         model_name = "Elyon Nova" if is_pro else "Elyon Core"
         bot.send_message(
             message.chat.id,
@@ -1208,7 +1235,7 @@ def api_chat():
         chat_id  = data.get("chat_id")
         if not user_id or not messages:
             return jsonify({"error": "Missing user_id or messages"}), 400
-        if is_maintenance() and user_id != OWNER_ID:
+        if is_maintenance() and not (user_id == OWNER_ID and not owner_test_mode):
             return jsonify({"error": "Maintenance in progress"}), 503
         if model == "gemini":
             if not has_active_sub(user_id):
@@ -1217,19 +1244,12 @@ def api_chat():
         else:
             reply = ask_gpt(messages)
 
-        # Проверка дневного лимита (owner без лимита)
-        if user_id != OWNER_ID:
+        # Проверка дневного лимита (owner в обычном режиме — без лимита)
+        if not (user_id == OWNER_ID and not owner_test_mode):
             is_pro = (model == "gemini")
             allowed, current, limit = check_daily_limit(user_id, is_pro)
             if not allowed:
                 return jsonify({"error": "daily_limit", "limit": limit}), 429
-
-        if model == "gemini":
-            if not has_active_sub(user_id):
-                return jsonify({"error": "No active subscription"}), 403
-            reply = ask_gemini(messages)
-        else:
-            reply = ask_gpt(messages)
 
         increment_daily_count(user_id)
         log_session_activity(user_id, "miniapp")
@@ -1314,7 +1334,7 @@ def api_file_b64():
         if not user_id:
             return jsonify({"error": "Missing user_id"}), 400
         user_id = int(user_id)
-        if is_maintenance() and user_id != OWNER_ID:
+        if is_maintenance() and not (user_id == OWNER_ID and not owner_test_mode):
             return jsonify({"error": "Maintenance in progress"}), 503
         if model == "gemini" and not has_active_sub(user_id):
             return jsonify({"error": "No active subscription"}), 403
@@ -1356,7 +1376,7 @@ def api_file():
         if not user_id:
             return jsonify({"error": "Missing user_id"}), 400
         user_id = int(user_id)
-        if is_maintenance() and user_id != OWNER_ID:
+        if is_maintenance() and not (user_id == OWNER_ID and not owner_test_mode):
             return jsonify({"error": "Maintenance in progress"}), 503
         if model == "gemini" and not has_active_sub(user_id):
             return jsonify({"error": "No active subscription"}), 403
