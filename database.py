@@ -458,3 +458,60 @@ def log_admin_grant(target_user_id, grant_type, grant_value, expires_at, granted
          granted_by, datetime.now().strftime("%d.%m.%Y %H:%M"))
     )
     conn.commit()
+
+
+# ── Дневные лимиты сообщений ──────────────────────────────────────────────
+
+DAILY_LIMIT_FREE = 15   # Elyon Core
+DAILY_LIMIT_PRO  = 30   # Elyon Nova
+
+def _ensure_daily_limits_table():
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS daily_limits (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER,
+            date        TEXT,
+            count       INTEGER DEFAULT 0,
+            UNIQUE(user_id, date)
+        )
+    """)
+    conn.commit()
+
+_ensure_daily_limits_table()
+
+
+def get_today_message_count(user_id):
+    """Сколько сообщений пользователь отправил сегодня."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    cursor.execute(
+        "SELECT count FROM daily_limits WHERE user_id = ? AND date = ?",
+        (user_id, today)
+    )
+    row = cursor.fetchone()
+    return row[0] if row else 0
+
+
+def increment_daily_count(user_id):
+    """Увеличить счётчик сообщений на 1. Возвращает новое значение."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    cursor.execute("""
+        INSERT INTO daily_limits (user_id, date, count)
+        VALUES (?, ?, 1)
+        ON CONFLICT(user_id, date) DO UPDATE SET count = count + 1
+    """, (user_id, today))
+    conn.commit()
+    cursor.execute(
+        "SELECT count FROM daily_limits WHERE user_id = ? AND date = ?",
+        (user_id, today)
+    )
+    return cursor.fetchone()[0]
+
+
+def check_daily_limit(user_id, is_pro=False):
+    """
+    Проверяет не превышен ли дневной лимит.
+    Возвращает (allowed: bool, current: int, limit: int)
+    """
+    limit   = DAILY_LIMIT_PRO if is_pro else DAILY_LIMIT_FREE
+    current = get_today_message_count(user_id)
+    return current < limit, current, limit
