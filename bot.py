@@ -20,7 +20,9 @@ from database import (init_db, get_user, get_user_by_username, register_user,
                       set_setting, get_setting, log_admin_grant,
                       get_mini_app_chats, save_mini_app_chat,
                       delete_mini_app_chat, log_session_activity,
-                      get_user_purchase_history)
+                      get_user_purchase_history,
+                      check_daily_limit, increment_daily_count,
+                      DAILY_LIMIT_FREE, DAILY_LIMIT_PRO)
 from ai_clients import ask_gpt, ask_gemini, ask_with_file, check_keys_status
 
 logging.basicConfig(level=logging.CRITICAL)
@@ -1146,6 +1148,19 @@ def handle_message(message):
         show_payment_options(message.chat.id, user_id)
         return
 
+    # Проверка дневного лимита
+    is_pro = (ai_model == "gemini")
+    allowed, current, limit = check_daily_limit(user_id, is_pro)
+    if not allowed:
+        model_name = "Elyon Nova" if is_pro else "Elyon Core"
+        bot.send_message(
+            message.chat.id,
+            f"Вы достигли дневного лимита сообщений ({limit}/{limit}).\n\n"
+            f"Лимит для {model_name}: {limit} сообщений в день.\n"
+            f"Лимит обновится в 00:00 по московскому времени."
+        )
+        return
+
     bot.send_chat_action(message.chat.id, "typing")
     add_message(user_id, "user", message.text)
     log_session_activity(user_id, "bot")
@@ -1153,6 +1168,7 @@ def handle_message(message):
 
     try:
         reply = ask_gpt(history) if ai_model == "gpt" else ask_gemini(history)
+        increment_daily_count(user_id)
         add_message(user_id, "assistant", reply)
         bot.send_message(message.chat.id, reply)
 
@@ -1200,6 +1216,22 @@ def api_chat():
             reply = ask_gemini(messages)
         else:
             reply = ask_gpt(messages)
+
+        # Проверка дневного лимита (owner без лимита)
+        if user_id != OWNER_ID:
+            is_pro = (model == "gemini")
+            allowed, current, limit = check_daily_limit(user_id, is_pro)
+            if not allowed:
+                return jsonify({"error": "daily_limit", "limit": limit}), 429
+
+        if model == "gemini":
+            if not has_active_sub(user_id):
+                return jsonify({"error": "No active subscription"}), 403
+            reply = ask_gemini(messages)
+        else:
+            reply = ask_gpt(messages)
+
+        increment_daily_count(user_id)
         log_session_activity(user_id, "miniapp")
         return jsonify({"reply": reply})
     except Exception as e:
