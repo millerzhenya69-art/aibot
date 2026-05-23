@@ -39,6 +39,50 @@ init_db()
 
 user_states = {}
 
+# ── Обязательные каналы для подписки ─────────────────────────────────────
+
+REQUIRED_CHANNELS = [
+    {"id": "@unkonyy",   "title": "Owner channel",    "url": "https://t.me/unkonyy"},
+    {"id": "@AI_Elyon",  "title": "Elyon AI channel", "url": "https://t.me/AI_Elyon"},
+]
+
+def check_subscriptions(user_id):
+    """Проверяет подписку на все обязательные каналы. Возвращает список каналов где НЕ подписан."""
+    not_subscribed = []
+    for ch in REQUIRED_CHANNELS:
+        try:
+            member = bot.get_chat_member(ch["id"], user_id)
+            if member.status in ("left", "kicked", "banned"):
+                not_subscribed.append(ch)
+        except Exception as e:
+            # Если бот не является членом канала — пропускаем проверку
+            print(f"Sub check error for {ch['id']}: {e}")
+    return not_subscribed
+
+def send_subscribe_prompt(chat_id):
+    """Отправляет сообщение с кнопками подписки."""
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    for ch in REQUIRED_CHANNELS:
+        markup.add(types.InlineKeyboardButton(
+            f"📢 {ch['title']}", url=ch["url"]
+        ))
+    markup.add(types.InlineKeyboardButton(
+        "✅ Я подписался — проверить", callback_data="check_subs"
+    ))
+    bot.send_message(
+        chat_id,
+        "👋 Добро пожаловать в Elyon AI!\n\n"
+        "Для использования бота необходимо подписаться на наши каналы:\n\n"
+        "📢 Owner channel — @unkonyy\n"
+        "📢 Elyon AI channel — @AI_Elyon\n\n"
+        "После подписки нажми кнопку ниже 👇",
+        reply_markup=markup
+    )
+
+def is_subscribed(user_id):
+    """True если пользователь подписан на все каналы."""
+    return len(check_subscriptions(user_id)) == 0
+
 # ── Цены ──────────────────────────────────────────────────────────────────
 
 PRICES = {
@@ -320,6 +364,16 @@ def handle_file_message(message, user_id, ai_model):
 
 @bot.message_handler(commands=["start"])
 def start(message):
+    user_id = message.from_user.id
+
+    # Owner всегда проходит без проверки
+    if user_id != OWNER_ID and not is_subscribed(user_id):
+        args = message.text.split()
+        if len(args) > 1:
+            user_states[user_id] = {"pending_ref": args[1]}
+        send_subscribe_prompt(message.chat.id)
+        return
+
     args = message.text.split()
     referred_by = None
     if len(args) > 1:
@@ -327,14 +381,22 @@ def start(message):
             referred_by = int(args[1])
         except:
             pass
-    is_new = register_user(message.from_user.id, message.from_user.username or "", referred_by)
+    # Проверяем отложенный реферал (если пришёл через реферальную ссылку до подписки)
+    if user_id in user_states and "pending_ref" in user_states[user_id]:
+        try:
+            referred_by = int(user_states[user_id]["pending_ref"])
+        except:
+            pass
+        del user_states[user_id]
+
+    is_new = register_user(user_id, message.from_user.username or "", referred_by)
     if is_new and referred_by:
         try:
             bot.send_message(referred_by, "Кто-то перешёл по твоей реферальной ссылке! +10 монет зачислено.")
         except:
             pass
-    bot.send_message(message.chat.id, "Загрузка...", reply_markup=main_menu_keyboard(message.from_user.id))
-    show_start(message.chat.id, message.from_user.id)
+    bot.send_message(message.chat.id, "Загрузка...", reply_markup=main_menu_keyboard(user_id))
+    show_start(message.chat.id, user_id)
 
 
 # ── /give — выдача подписки / роли ────────────────────────────────────────
@@ -612,7 +674,50 @@ def handle_callback(call):
     except:
         pass
 
-    # ── Список всех пользователей ──
+    # ── Проверка подписки на каналы ──
+    if call.data == "check_subs":
+        not_subbed = check_subscriptions(user_id)
+        if not_subbed:
+            # Ещё не подписан — показываем какие каналы остались
+            markup = types.InlineKeyboardMarkup(row_width=1)
+            for ch in not_subbed:
+                markup.add(types.InlineKeyboardButton(
+                    f"📢 {ch['title']}", url=ch["url"]
+                ))
+            markup.add(types.InlineKeyboardButton(
+                "✅ Проверить снова", callback_data="check_subs"
+            ))
+            bot.send_message(
+                chat_id,
+                "❌ Ты ещё не подписан на все каналы.\n\n"
+                + "\n".join(f"— {ch['title']}" for ch in not_subbed) +
+                "\n\nПодпишись и нажми проверить снова 👇",
+                reply_markup=markup
+            )
+        else:
+            # Подписан — регистрируем и запускаем бота
+            referred_by = None
+            if user_id in user_states and "pending_ref" in user_states[user_id]:
+                try:
+                    referred_by = int(user_states[user_id]["pending_ref"])
+                except:
+                    pass
+                del user_states[user_id]
+            is_new = register_user(user_id, call.from_user.username or "", referred_by)
+            if is_new and referred_by:
+                try:
+                    bot.send_message(referred_by, "Кто-то перешёл по твоей реферальной ссылке! +10 монет зачислено.")
+                except:
+                    pass
+            bot.send_message(
+                chat_id,
+                "✅ Отлично! Подписка подтверждена.",
+                reply_markup=main_menu_keyboard(user_id)
+            )
+            show_start(chat_id, user_id)
+        return
+
+    
     if call.data == "admin_users" and user_id == OWNER_ID:
         users = get_all_users()
         if not users:
@@ -985,6 +1090,11 @@ def ensure_registered(message):
 def handle_message(message):
     ensure_registered(message)
     user_id = message.from_user.id
+
+    # Проверка подписки на каналы (кроме owner)
+    if user_id != OWNER_ID and not is_subscribed(user_id):
+        send_subscribe_prompt(message.chat.id)
+        return
 
     # Ожидание ввода кастомных дней
     if user_id in user_states and user_states[user_id].get("state") == "waiting_custom_days":
