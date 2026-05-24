@@ -1655,13 +1655,41 @@ def keep_alive():
             print(f"keep_alive error: {e}")
 
 
+def start_polling():
+    """Запускает polling с защитой от 409 конфликта."""
+    import time as _time
+    # Сначала удаляем webhook если есть
+    try:
+        bot.delete_webhook(drop_pending_updates=True)
+        print("Webhook cleared.")
+    except Exception as e:
+        print(f"Webhook clear error: {e}")
+
+    retries = 0
+    while True:
+        try:
+            print("Starting polling...")
+            bot.infinity_polling(timeout=20, long_polling_timeout=5)
+            break
+        except Exception as e:
+            err = str(e)
+            if "409" in err or "Conflict" in err:
+                retries += 1
+                wait = min(30, 5 * retries)
+                print(f"409 Conflict — another instance running. Retry in {wait}s...")
+                _time.sleep(wait)
+            else:
+                print(f"Polling error: {e}")
+                _time.sleep(5)
+
+
 try:
     print("bot is running...")
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
     keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
     keep_alive_thread.start()
-    bot.infinity_polling(timeout=20, long_polling_timeout=5)
+    start_polling()
 except KeyboardInterrupt:
     print("Stopped.")
 except Exception as e:
