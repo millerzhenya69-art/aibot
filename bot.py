@@ -1417,21 +1417,24 @@ GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID",
 
 def _upsert_web_user(email, first_name, last_name, avatar="", provider="email"):
     """Создаёт или обновляет пользователя из веб-приложения. Возвращает user dict."""
-    import sqlite3 as _sqlite
+    import database as _db
+    import sqlite3
+
+    db_conn   = _db.conn
+    db_cursor = _db.cursor
+
     # Ищем по email
-    cursor.execute("SELECT user_id, username, role FROM users WHERE username = ?", (email,))
-    row = cursor.fetchone()
+    db_cursor.execute("SELECT user_id FROM users WHERE username = ?", (email,))
+    row = db_cursor.fetchone()
     if row:
         user_id = row[0]
     else:
-        # Новый пользователь — генерируем числовой ID на основе хэша email
-        user_id = abs(hash(email)) % (10**12)
-        role = "default user"
-        cursor.execute(
+        user_id = abs(hash(email + provider)) % (10**12)
+        db_cursor.execute(
             "INSERT OR IGNORE INTO users (user_id, username, joined_at, role) VALUES (?, ?, ?, ?)",
-            (user_id, email, datetime.now().strftime("%d.%m.%Y %H:%M"), role)
+            (user_id, email, datetime.now().strftime("%d.%m.%Y %H:%M"), "default user")
         )
-        conn.commit()
+        db_conn.commit()
     return {
         "user_id":    user_id,
         "email":      email,
@@ -1575,6 +1578,8 @@ def auth_email():
         return "", 204
     try:
         import hashlib as _hl
+        import database as _db
+
         data       = request.json or {}
         action     = data.get("action", "signin")
         email      = data.get("email", "").lower().strip()
@@ -1585,31 +1590,27 @@ def auth_email():
         if not email or not password:
             return jsonify({"ok": False, "error": "Missing email or password"}), 400
 
-        # Хэш пароля
         pw_hash = _hl.sha256(password.encode()).hexdigest()
 
         if action == "signup":
-            # Проверяем не занят ли email
-            cursor.execute("SELECT user_id FROM users WHERE username = ?", (email,))
-            if cursor.fetchone():
+            _db.cursor.execute("SELECT user_id FROM users WHERE username = ?", (email,))
+            if _db.cursor.fetchone():
                 return jsonify({"ok": False, "error": "Email already registered"}), 409
 
             user_id = abs(hash(email + pw_hash)) % (10**12)
-            cursor.execute(
+            _db.cursor.execute(
                 "INSERT OR IGNORE INTO users (user_id, username, joined_at, role) VALUES (?, ?, ?, ?)",
                 (user_id, email, datetime.now().strftime("%d.%m.%Y %H:%M"), "default user")
             )
-            # Сохраняем хэш пароля в settings
-            cursor.execute(
+            _db.cursor.execute(
                 "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
                 (f"pw_{email}", pw_hash)
             )
-            conn.commit()
+            _db.conn.commit()
             user = _upsert_web_user(email, first_name, last_name, "", "email")
-            # В продакшне здесь отправляем письмо верификации
             return jsonify({"ok": True, "verify": False, "user": user})
 
-        else:  # signin
+        else:
             stored = get_setting(f"pw_{email}")
             if not stored or stored != pw_hash:
                 return jsonify({"ok": False, "error": "Invalid email or password"}), 401
@@ -1619,6 +1620,15 @@ def auth_email():
     except Exception as e:
         print("auth_email error:", e)
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/bot_info", methods=["GET"])
+def api_bot_info():
+    try:
+        info = bot.get_me()
+        return jsonify({"bot_id": info.id, "username": info.username})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/health", methods=["GET"])
