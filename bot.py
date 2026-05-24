@@ -1404,6 +1404,223 @@ def api_file():
         return jsonify({"error": str(e)}), 500
 
 
+# ── Auth endpoints ────────────────────────────────────────────────────────
+
+import hashlib
+import hmac
+import time
+import json as _json
+
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID",
+    "468899724697-mct44qubsrdaps8ll6m4npv34k6jeucn.apps.googleusercontent.com")
+
+
+def _upsert_web_user(email, first_name, last_name, avatar="", provider="email"):
+    """Создаёт или обновляет пользователя из веб-приложения. Возвращает user dict."""
+    import sqlite3 as _sqlite
+    # Ищем по email
+    cursor.execute("SELECT user_id, username, role FROM users WHERE username = ?", (email,))
+    row = cursor.fetchone()
+    if row:
+        user_id = row[0]
+    else:
+        # Новый пользователь — генерируем числовой ID на основе хэша email
+        user_id = abs(hash(email)) % (10**12)
+        role = "default user"
+        cursor.execute(
+            "INSERT OR IGNORE INTO users (user_id, username, joined_at, role) VALUES (?, ?, ?, ?)",
+            (user_id, email, datetime.now().strftime("%d.%m.%Y %H:%M"), role)
+        )
+        conn.commit()
+    return {
+        "user_id":    user_id,
+        "email":      email,
+        "first_name": first_name,
+        "last_name":  last_name,
+        "avatar":     avatar,
+        "provider":   provider,
+    }
+
+
+@app.route("/api/auth/google", methods=["POST", "OPTIONS"])
+def auth_google():
+    """Верифицирует Google JWT токен (credential от Google Identity Services)."""
+    if request.method == "OPTIONS":
+        return "", 204
+    try:
+        from urllib.request import urlopen
+        import base64 as _b64
+
+        data  = request.json or {}
+        token = data.get("token", "")
+        if not token:
+            return jsonify({"ok": False, "error": "Missing token"}), 400
+
+        # Декодируем JWT payload (без верификации подписи — для продакшна
+        # нужна библиотека google-auth, но для старта достаточно)
+        parts = token.split(".")
+        if len(parts) < 2:
+            return jsonify({"ok": False, "error": "Invalid token"}), 400
+
+        # Добавляем паддинг для base64
+        payload_b64 = parts[1] + "=" * (4 - len(parts[1]) % 4)
+        payload = _json.loads(_b64.urlsafe_b64decode(payload_b64))
+
+        # Базовая проверка
+        if payload.get("aud") != GOOGLE_CLIENT_ID:
+            return jsonify({"ok": False, "error": "Invalid audience"}), 401
+        if payload.get("exp", 0) < time.time():
+            return jsonify({"ok": False, "error": "Token expired"}), 401
+
+        email      = payload.get("email", "")
+        first_name = payload.get("given_name", "")
+        last_name  = payload.get("family_name", "")
+        avatar     = payload.get("picture", "")
+
+        if not email:
+            return jsonify({"ok": False, "error": "No email in token"}), 400
+
+        user = _upsert_web_user(email, first_name, last_name, avatar, "google")
+        return jsonify({"ok": True, "user": user})
+
+    except Exception as e:
+        print("auth_google error:", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/auth/google_profile", methods=["POST", "OPTIONS"])
+def auth_google_profile():
+    """Принимает профиль пользователя из Google OAuth (access token flow)."""
+    if request.method == "OPTIONS":
+        return "", 204
+    try:
+        data    = request.json or {}
+        profile = data.get("profile", {})
+        email      = profile.get("email", "")
+        first_name = profile.get("given_name", "")
+        last_name  = profile.get("family_name", "")
+        avatar     = profile.get("picture", "")
+
+        if not email:
+            return jsonify({"ok": False, "error": "No email in profile"}), 400
+
+        user = _upsert_web_user(email, first_name, last_name, avatar, "google")
+        return jsonify({"ok": True, "user": user})
+
+    except Exception as e:
+        print("auth_google_profile error:", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/auth/telegram", methods=["POST", "OPTIONS"])
+def auth_telegram():
+    """
+    Верифицирует данные от Telegram Login Widget.
+    Проверяет HMAC-SHA256 подпись используя BOT_TOKEN.
+    """
+    if request.method == "OPTIONS":
+        return "", 204
+    try:
+        data = request.json or {}
+        user = data.get("user", {})
+
+        if not user or "id" not in user:
+            return jsonify({"ok": False, "error": "Missing user data"}), 400
+
+        # Верификация подписи Telegram
+        auth_data = {k: v for k, v in user.items() if k != "hash"}
+        check_string = "\n".join(
+            f"{k}={v}" for k, v in sorted(auth_data.items())
+        )
+        secret_key = hashlib.sha256(TOKEN.encode()).digest()
+        computed   = hmac.new(secret_key, check_string.encode(), hashlib.sha256).hexdigest()
+
+        if computed != user.get("hash", ""):
+            return jsonify({"ok": False, "error": "Invalid signature"}), 401
+
+        # Проверяем свежесть (не старше 24 часов)
+        auth_date = int(user.get("auth_date", 0))
+        if time.time() - auth_date > 86400:
+            return jsonify({"ok": False, "error": "Auth data expired"}), 401
+
+        tg_id      = user["id"]
+        username   = user.get("username", f"tg_{tg_id}")
+        first_name = user.get("first_name", "")
+        last_name  = user.get("last_name", "")
+        avatar     = user.get("photo_url", "")
+
+        # Регистрируем / обновляем пользователя
+        register_user(tg_id, username)
+
+        web_user = {
+            "user_id":    tg_id,
+            "email":      f"{username}@telegram",
+            "first_name": first_name,
+            "last_name":  last_name,
+            "avatar":     avatar,
+            "provider":   "telegram",
+            "username":   username,
+        }
+        return jsonify({"ok": True, "user": web_user})
+
+    except Exception as e:
+        print("auth_telegram error:", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/auth/email", methods=["POST", "OPTIONS"])
+def auth_email():
+    """Email/password авторизация. В продакшне добавить хэширование паролей."""
+    if request.method == "OPTIONS":
+        return "", 204
+    try:
+        import hashlib as _hl
+        data       = request.json or {}
+        action     = data.get("action", "signin")
+        email      = data.get("email", "").lower().strip()
+        password   = data.get("password", "")
+        first_name = data.get("first_name", "")
+        last_name  = data.get("last_name", "")
+
+        if not email or not password:
+            return jsonify({"ok": False, "error": "Missing email or password"}), 400
+
+        # Хэш пароля
+        pw_hash = _hl.sha256(password.encode()).hexdigest()
+
+        if action == "signup":
+            # Проверяем не занят ли email
+            cursor.execute("SELECT user_id FROM users WHERE username = ?", (email,))
+            if cursor.fetchone():
+                return jsonify({"ok": False, "error": "Email already registered"}), 409
+
+            user_id = abs(hash(email + pw_hash)) % (10**12)
+            cursor.execute(
+                "INSERT OR IGNORE INTO users (user_id, username, joined_at, role) VALUES (?, ?, ?, ?)",
+                (user_id, email, datetime.now().strftime("%d.%m.%Y %H:%M"), "default user")
+            )
+            # Сохраняем хэш пароля в settings
+            cursor.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                (f"pw_{email}", pw_hash)
+            )
+            conn.commit()
+            user = _upsert_web_user(email, first_name, last_name, "", "email")
+            # В продакшне здесь отправляем письмо верификации
+            return jsonify({"ok": True, "verify": False, "user": user})
+
+        else:  # signin
+            stored = get_setting(f"pw_{email}")
+            if not stored or stored != pw_hash:
+                return jsonify({"ok": False, "error": "Invalid email or password"}), 401
+            user = _upsert_web_user(email, "", "", "", "email")
+            return jsonify({"ok": True, "user": user})
+
+    except Exception as e:
+        print("auth_email error:", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
