@@ -1,5 +1,7 @@
 import sys
 import io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
 import os
 import tempfile
 import telebot
@@ -20,9 +22,7 @@ from database import (init_db, get_user, get_user_by_username, register_user,
                       set_setting, get_setting, log_admin_grant,
                       get_mini_app_chats, save_mini_app_chat,
                       delete_mini_app_chat, log_session_activity,
-                      get_user_purchase_history,
-                      check_daily_limit, increment_daily_count,
-                      DAILY_LIMIT_FREE, DAILY_LIMIT_PRO)
+                      get_user_purchase_history)
 from ai_clients import ask_gpt, ask_gemini, ask_with_file, check_keys_status
 
 logging.basicConfig(level=logging.CRITICAL)
@@ -31,7 +31,7 @@ TOKEN        = os.environ.get("BOT_TOKEN", "")
 OWNER_ID     = int(os.environ.get("OWNER_ID", "7113603197"))
 CRYPTO_TOKEN = os.environ.get("CRYPTO_TOKEN", "")
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "Elyon_by_unkony_bot")
-
+WATA_TOKEN   = os.environ.get("WATA_TOKEN", "")
 
 import database
 database.OWNER_ID = OWNER_ID
@@ -40,58 +40,6 @@ bot = telebot.TeleBot(TOKEN, threaded=False)
 init_db()
 
 user_states = {}
-
-# ── Тест-режим для owner ──────────────────────────────────────────────────
-# Когда включён — owner проходит все проверки как обычный пользователь
-owner_test_mode = False
-
-def is_privileged(user_id):
-    """Owner без тест-режима — обходит все проверки."""
-    return user_id == OWNER_ID and not owner_test_mode
-
-# ── Обязательные каналы для подписки ─────────────────────────────────────
-
-REQUIRED_CHANNELS = [
-    {"id": "@unkonyy",   "title": "Owner channel",    "url": "https://t.me/unkonyy"},
-    {"id": "@AI_Elyon",  "title": "Elyon AI channel", "url": "https://t.me/AI_Elyon"},
-]
-
-def check_subscriptions(user_id):
-    """Проверяет подписку на все обязательные каналы. Возвращает список каналов где НЕ подписан."""
-    not_subscribed = []
-    for ch in REQUIRED_CHANNELS:
-        try:
-            member = bot.get_chat_member(ch["id"], user_id)
-            if member.status in ("left", "kicked", "banned"):
-                not_subscribed.append(ch)
-        except Exception as e:
-            # Если бот не является членом канала — пропускаем проверку
-            print(f"Sub check error for {ch['id']}: {e}")
-    return not_subscribed
-
-def send_subscribe_prompt(chat_id):
-    """Отправляет сообщение с кнопками подписки."""
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    for ch in REQUIRED_CHANNELS:
-        markup.add(types.InlineKeyboardButton(
-            f"📢 {ch['title']}", url=ch["url"]
-        ))
-    markup.add(types.InlineKeyboardButton(
-        "✅ Я подписался — проверить", callback_data="check_subs"
-    ))
-    bot.send_message(
-        chat_id,
-        "👋 Добро пожаловать в Elyon AI!\n\n"
-        "Для использования бота необходимо подписаться на наши каналы:\n\n"
-        "📢 Owner channel — @unkonyy\n"
-        "📢 Elyon AI channel — @AI_Elyon\n\n"
-        "После подписки нажми кнопку ниже 👇",
-        reply_markup=markup
-    )
-
-def is_subscribed(user_id):
-    """True если пользователь подписан на все каналы."""
-    return len(check_subscriptions(user_id)) == 0
 
 # ── Цены ──────────────────────────────────────────────────────────────────
 
@@ -186,6 +134,7 @@ def show_payment_options(chat_id, user_id):
         types.InlineKeyboardButton("⭐ Навсегда — 120 звёзд",  callback_data="pay_stars_forever"),
         types.InlineKeyboardButton("💳 Навсегда — 429 ₽",       callback_data="pay_crypto_forever"),
         types.InlineKeyboardButton("📅 Произвольный срок",      callback_data="pay_custom"),
+        types.InlineKeyboardButton("💳 Wata (карта РФ)",        callback_data="pay_wata_menu"),
         types.InlineKeyboardButton("🎁 Подарком [TEST]",        callback_data="pay_gift_menu"),
     )
     if balance >= 50:
@@ -198,6 +147,7 @@ def show_payment_options(chat_id, user_id):
         "⭐ Elyon Nova — Подписка\n\n"
         "⭐ Telegram Stars\n"
         "💳 CryptoBot (₽/USDT)\n"
+        "💳 Wata (карта РФ)\n"
         "🎁 Подарком (тест)\n"
         "📅 Произвольное количество дней\n"
         + (f"🪙 Монеты (баланс: {balance})\n" if balance >= 50 else "") +
@@ -374,16 +324,6 @@ def handle_file_message(message, user_id, ai_model):
 
 @bot.message_handler(commands=["start"])
 def start(message):
-    user_id = message.from_user.id
-
-    # Owner без тест-режима — пропускаем проверку
-    if not is_privileged(user_id) and not is_subscribed(user_id):
-        args = message.text.split()
-        if len(args) > 1:
-            user_states[user_id] = {"pending_ref": args[1]}
-        send_subscribe_prompt(message.chat.id)
-        return
-
     args = message.text.split()
     referred_by = None
     if len(args) > 1:
@@ -391,22 +331,14 @@ def start(message):
             referred_by = int(args[1])
         except:
             pass
-    # Проверяем отложенный реферал (если пришёл через реферальную ссылку до подписки)
-    if user_id in user_states and "pending_ref" in user_states[user_id]:
-        try:
-            referred_by = int(user_states[user_id]["pending_ref"])
-        except:
-            pass
-        del user_states[user_id]
-
-    is_new = register_user(user_id, message.from_user.username or "", referred_by)
+    is_new = register_user(message.from_user.id, message.from_user.username or "", referred_by)
     if is_new and referred_by:
         try:
             bot.send_message(referred_by, "Кто-то перешёл по твоей реферальной ссылке! +10 монет зачислено.")
         except:
             pass
-    bot.send_message(message.chat.id, "Загрузка...", reply_markup=main_menu_keyboard(user_id))
-    show_start(message.chat.id, user_id)
+    bot.send_message(message.chat.id, "Загрузка...", reply_markup=main_menu_keyboard(message.from_user.id))
+    show_start(message.chat.id, message.from_user.id)
 
 
 # ── /give — выдача подписки / роли ────────────────────────────────────────
@@ -582,26 +514,7 @@ def cmd_pay(message):
         pass
 
 
-# ── /testmode — переключение тест-режима для owner ────────────────────────
-
-@bot.message_handler(commands=["testmode"])
-def cmd_testmode(message):
-    global owner_test_mode
-    if message.from_user.id != OWNER_ID:
-        return
-    owner_test_mode = not owner_test_mode
-    status = "ВКЛ 🧪" if owner_test_mode else "ВЫКЛ 👑"
-    bot.send_message(
-        message.chat.id,
-        f"Тест-режим: {status}\n\n"
-        + ("Теперь ты проходишь все проверки как обычный пользователь.\n"
-           "Лимиты, подписка на каналы — всё активно.\n"
-           "/testmode — чтобы вернуться в режим owner."
-           if owner_test_mode else
-           "Вернулся в режим owner. Все проверки отключены.")
-    )
-
-
+# ── Панель управления ──────────────────────────────────────────────────────
 
 @bot.message_handler(func=lambda m: m.text == "🛠 Control Panel" and m.from_user.id == OWNER_ID)
 def control_panel(message):
@@ -703,72 +616,23 @@ def handle_callback(call):
     except:
         pass
 
-    # ── Проверка подписки на каналы ──
-    if call.data == "check_subs":
-        not_subbed = check_subscriptions(user_id)
-        if not_subbed:
-            # Ещё не подписан — показываем какие каналы остались
-            markup = types.InlineKeyboardMarkup(row_width=1)
-            for ch in not_subbed:
-                markup.add(types.InlineKeyboardButton(
-                    f"📢 {ch['title']}", url=ch["url"]
-                ))
-            markup.add(types.InlineKeyboardButton(
-                "✅ Проверить снова", callback_data="check_subs"
-            ))
-            bot.send_message(
-                chat_id,
-                "❌ Ты ещё не подписан на все каналы.\n\n"
-                + "\n".join(f"— {ch['title']}" for ch in not_subbed) +
-                "\n\nПодпишись и нажми проверить снова 👇",
-                reply_markup=markup
-            )
-        else:
-            # Подписан — регистрируем и запускаем бота
-            referred_by = None
-            if user_id in user_states and "pending_ref" in user_states[user_id]:
-                try:
-                    referred_by = int(user_states[user_id]["pending_ref"])
-                except:
-                    pass
-                del user_states[user_id]
-            is_new = register_user(user_id, call.from_user.username or "", referred_by)
-            if is_new and referred_by:
-                try:
-                    bot.send_message(referred_by, "Кто-то перешёл по твоей реферальной ссылке! +10 монет зачислено.")
-                except:
-                    pass
-            bot.send_message(
-                chat_id,
-                "✅ Отлично! Подписка подтверждена.",
-                reply_markup=main_menu_keyboard(user_id)
-            )
-            show_start(chat_id, user_id)
-        return
-
-    
+    # ── Список всех пользователей ──
     if call.data == "admin_users" and user_id == OWNER_ID:
         users = get_all_users()
         if not users:
             bot.send_message(chat_id, "Пользователей пока нет.")
             return
-        lines = [f"👥 Всего пользователей: {len(users)}\n"]
-        for u in users:
+        # Разбиваем на страницы по 25
+        text = f"👥 Все пользователи ({len(users)}):\n\n"
+        for u in users[:25]:
             uname   = f"@{u[1]}" if u[1] else f"ID:{u[0]}"
-            role    = u[3] or "—"
+            role    = u[3]
             sub     = u[5] if u[5] != "none" else "—"
-            balance = u[7] if len(u) > 7 else 0
-            lines.append(f"{uname} | {role} | {sub} | 🪙{balance}")
-        # Разбиваем на части по 3500 символов (лимит TG — 4096)
-        chunk = ""
-        for line in lines:
-            if len(chunk) + len(line) + 1 > 3500:
-                bot.send_message(chat_id, chunk)
-                chunk = line + "\n"
-            else:
-                chunk += line + "\n"
-        if chunk:
-            bot.send_message(chat_id, chunk)
+            balance = u[7]
+            text += f"{uname} | {role} | sub: {sub} | 🪙{balance}\n"
+        if len(users) > 25:
+            text += f"\n... и ещё {len(users) - 25} пользователей"
+        bot.send_message(chat_id, text)
         return
 
     # ── Последние платежи ──
@@ -834,6 +698,47 @@ def handle_callback(call):
                 callback_data="admin_toggle_maintenance"
             ))
         bot.send_message(chat_id, f"Тех.работы: {status}", reply_markup=markup if new_val == "1" else None)
+        return
+
+    # ── Wata меню ──
+    if call.data == "pay_wata_menu":
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        for plan_key, plan_data in PRICES.items():
+            markup.add(types.InlineKeyboardButton(
+                f"💳 {plan_data['label'].replace('⭐', '₽')} ({plan_data['rub']} ₽)",
+                callback_data=f"pay_wata_{plan_key}"
+            ))
+        markup.add(types.InlineKeyboardButton("◀️ Назад", callback_data="choose_pro"))
+        bot.send_message(
+            chat_id,
+            "💳 Оплата через Wata (карта РФ)\n\nВыбери тариф:",
+            reply_markup=markup
+        )
+        return
+
+    if call.data.startswith("pay_wata_"):
+        plan = call.data.replace("pay_wata_", "")
+        price = PRICES.get(plan)
+        if not price:
+            bot.send_message(chat_id, "Неизвестный тариф.")
+            return
+        if not WATA_TOKEN:
+            bot.send_message(chat_id,
+                "Оплата через Wata временно недоступна. "
+                "Попробуй другой способ оплаты.")
+            return
+        try:
+            bot.send_invoice(
+                chat_id,
+                title=f"Elyon Nova — {price['label']}",
+                description="Доступ к Elyon Nova (расширенный AI)",
+                invoice_payload=f"wata_pro_{plan}",
+                provider_token=WATA_TOKEN,
+                currency="RUB",
+                prices=[types.LabeledPrice(price["label"], price["rub"] * 100)]
+            )
+        except Exception as e:
+            bot.send_message(chat_id, f"Ошибка создания платежа Wata: {e}")
         return
 
     # ── Подарок (тест) ──
@@ -981,6 +886,14 @@ def payment_success(message):
         )
         return
 
+    # Wata
+    if payload.startswith("wata_pro_"):
+        plan = payload.replace("wata_pro_", "")
+        activate_subscription(user_id, plan, message.chat.id)
+        log_payment(user_id, message.from_user.username or "", plan, "wata",
+                    str(PRICES.get(plan, {}).get("rub", "?")))
+        return
+
     # Stars custom
     if payload.startswith("custom_"):
         days = int(payload.replace("custom_", ""))
@@ -1120,11 +1033,6 @@ def handle_message(message):
     ensure_registered(message)
     user_id = message.from_user.id
 
-    # Проверка подписки на каналы
-    if not is_privileged(user_id) and not is_subscribed(user_id):
-        send_subscribe_prompt(message.chat.id)
-        return
-
     # Ожидание ввода кастомных дней
     if user_id in user_states and user_states[user_id].get("state") == "waiting_custom_days":
         try:
@@ -1155,7 +1063,7 @@ def handle_message(message):
     if message.text and message.text in MENU_TEXTS:
         return
 
-    if is_maintenance() and not is_privileged(user_id):
+    if is_maintenance() and user_id != OWNER_ID:
         bot.send_message(message.chat.id,
                          "Технические работы\n\nElyon AI временно недоступен.")
         return
@@ -1175,19 +1083,6 @@ def handle_message(message):
         show_payment_options(message.chat.id, user_id)
         return
 
-    # Проверка дневного лимита (в тест-режиме owner тоже проверяется)
-    is_pro = (ai_model == "gemini")
-    allowed, current, limit = check_daily_limit(user_id, is_pro)
-    if not allowed and not (user_id == OWNER_ID and not owner_test_mode):
-        model_name = "Elyon Nova" if is_pro else "Elyon Core"
-        bot.send_message(
-            message.chat.id,
-            f"Вы достигли дневного лимита сообщений ({limit}/{limit}).\n\n"
-            f"Лимит для {model_name}: {limit} сообщений в день.\n"
-            f"Лимит обновится в 00:00 по московскому времени."
-        )
-        return
-
     bot.send_chat_action(message.chat.id, "typing")
     add_message(user_id, "user", message.text)
     log_session_activity(user_id, "bot")
@@ -1195,7 +1090,6 @@ def handle_message(message):
 
     try:
         reply = ask_gpt(history) if ai_model == "gpt" else ask_gemini(history)
-        increment_daily_count(user_id)
         add_message(user_id, "assistant", reply)
         bot.send_message(message.chat.id, reply)
 
@@ -1235,7 +1129,7 @@ def api_chat():
         chat_id  = data.get("chat_id")
         if not user_id or not messages:
             return jsonify({"error": "Missing user_id or messages"}), 400
-        if is_maintenance() and not (user_id == OWNER_ID and not owner_test_mode):
+        if is_maintenance() and user_id != OWNER_ID:
             return jsonify({"error": "Maintenance in progress"}), 503
         if model == "gemini":
             if not has_active_sub(user_id):
@@ -1243,15 +1137,6 @@ def api_chat():
             reply = ask_gemini(messages)
         else:
             reply = ask_gpt(messages)
-
-        # Проверка дневного лимита (owner в обычном режиме — без лимита)
-        if not (user_id == OWNER_ID and not owner_test_mode):
-            is_pro = (model == "gemini")
-            allowed, current, limit = check_daily_limit(user_id, is_pro)
-            if not allowed:
-                return jsonify({"error": "daily_limit", "limit": limit}), 429
-
-        increment_daily_count(user_id)
         log_session_activity(user_id, "miniapp")
         return jsonify({"reply": reply})
     except Exception as e:
@@ -1334,7 +1219,7 @@ def api_file_b64():
         if not user_id:
             return jsonify({"error": "Missing user_id"}), 400
         user_id = int(user_id)
-        if is_maintenance() and not (user_id == OWNER_ID and not owner_test_mode):
+        if is_maintenance() and user_id != OWNER_ID:
             return jsonify({"error": "Maintenance in progress"}), 503
         if model == "gemini" and not has_active_sub(user_id):
             return jsonify({"error": "No active subscription"}), 403
@@ -1376,7 +1261,7 @@ def api_file():
         if not user_id:
             return jsonify({"error": "Missing user_id"}), 400
         user_id = int(user_id)
-        if is_maintenance() and not (user_id == OWNER_ID and not owner_test_mode):
+        if is_maintenance() and user_id != OWNER_ID:
             return jsonify({"error": "Maintenance in progress"}), 503
         if model == "gemini" and not has_active_sub(user_id):
             return jsonify({"error": "No active subscription"}), 403
@@ -1400,233 +1285,6 @@ def api_file():
         use_pro = model == "gemini"
         reply = ask_with_file(file_bytes, mime_type, file_name, prompt, history, use_pro=use_pro)
         return jsonify({"reply": reply})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-# ── Auth endpoints ────────────────────────────────────────────────────────
-
-import hashlib
-import hmac
-import time
-import json as _json
-
-GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID",
-    "468899724697-mct44qubsrdaps8ll6m4npv34k6jeucn.apps.googleusercontent.com")
-
-
-def _upsert_web_user(email, first_name, last_name, avatar="", provider="email"):
-    """Создаёт или обновляет пользователя из веб-приложения. Возвращает user dict."""
-    import database as _db
-    import sqlite3
-
-    db_conn   = _db.conn
-    db_cursor = _db.cursor
-
-    # Ищем по email
-    db_cursor.execute("SELECT user_id FROM users WHERE username = ?", (email,))
-    row = db_cursor.fetchone()
-    if row:
-        user_id = row[0]
-    else:
-        user_id = abs(hash(email + provider)) % (10**12)
-        db_cursor.execute(
-            "INSERT OR IGNORE INTO users (user_id, username, joined_at, role) VALUES (?, ?, ?, ?)",
-            (user_id, email, datetime.now().strftime("%d.%m.%Y %H:%M"), "default user")
-        )
-        db_conn.commit()
-    return {
-        "user_id":    user_id,
-        "email":      email,
-        "first_name": first_name,
-        "last_name":  last_name,
-        "avatar":     avatar,
-        "provider":   provider,
-    }
-
-
-@app.route("/api/auth/google", methods=["POST", "OPTIONS"])
-def auth_google():
-    """Верифицирует Google JWT токен (credential от Google Identity Services)."""
-    if request.method == "OPTIONS":
-        return "", 204
-    try:
-        from urllib.request import urlopen
-        import base64 as _b64
-
-        data  = request.json or {}
-        token = data.get("token", "")
-        if not token:
-            return jsonify({"ok": False, "error": "Missing token"}), 400
-
-        # Декодируем JWT payload (без верификации подписи — для продакшна
-        # нужна библиотека google-auth, но для старта достаточно)
-        parts = token.split(".")
-        if len(parts) < 2:
-            return jsonify({"ok": False, "error": "Invalid token"}), 400
-
-        # Добавляем паддинг для base64
-        payload_b64 = parts[1] + "=" * (4 - len(parts[1]) % 4)
-        payload = _json.loads(_b64.urlsafe_b64decode(payload_b64))
-
-        # Базовая проверка
-        if payload.get("aud") != GOOGLE_CLIENT_ID:
-            return jsonify({"ok": False, "error": "Invalid audience"}), 401
-        if payload.get("exp", 0) < time.time():
-            return jsonify({"ok": False, "error": "Token expired"}), 401
-
-        email      = payload.get("email", "")
-        first_name = payload.get("given_name", "")
-        last_name  = payload.get("family_name", "")
-        avatar     = payload.get("picture", "")
-
-        if not email:
-            return jsonify({"ok": False, "error": "No email in token"}), 400
-
-        user = _upsert_web_user(email, first_name, last_name, avatar, "google")
-        return jsonify({"ok": True, "user": user})
-
-    except Exception as e:
-        print("auth_google error:", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-@app.route("/api/auth/google_profile", methods=["POST", "OPTIONS"])
-def auth_google_profile():
-    """Принимает профиль пользователя из Google OAuth (access token flow)."""
-    if request.method == "OPTIONS":
-        return "", 204
-    try:
-        data    = request.json or {}
-        profile = data.get("profile", {})
-        email      = profile.get("email", "")
-        first_name = profile.get("given_name", "")
-        last_name  = profile.get("family_name", "")
-        avatar     = profile.get("picture", "")
-
-        if not email:
-            return jsonify({"ok": False, "error": "No email in profile"}), 400
-
-        user = _upsert_web_user(email, first_name, last_name, avatar, "google")
-        return jsonify({"ok": True, "user": user})
-
-    except Exception as e:
-        print("auth_google_profile error:", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-@app.route("/api/auth/telegram", methods=["POST", "OPTIONS"])
-def auth_telegram():
-    """
-    Верифицирует данные от Telegram Login Widget.
-    Проверяет HMAC-SHA256 подпись используя BOT_TOKEN.
-    """
-    if request.method == "OPTIONS":
-        return "", 204
-    try:
-        data = request.json or {}
-        user = data.get("user", {})
-
-        if not user or "id" not in user:
-            return jsonify({"ok": False, "error": "Missing user data"}), 400
-
-        # Верификация подписи Telegram
-        auth_data = {k: v for k, v in user.items() if k != "hash"}
-        check_string = "\n".join(
-            f"{k}={v}" for k, v in sorted(auth_data.items())
-        )
-        secret_key = hashlib.sha256(TOKEN.encode()).digest()
-        computed   = hmac.new(secret_key, check_string.encode(), hashlib.sha256).hexdigest()
-
-        if computed != user.get("hash", ""):
-            return jsonify({"ok": False, "error": "Invalid signature"}), 401
-
-        # Проверяем свежесть (не старше 24 часов)
-        auth_date = int(user.get("auth_date", 0))
-        if time.time() - auth_date > 86400:
-            return jsonify({"ok": False, "error": "Auth data expired"}), 401
-
-        tg_id      = user["id"]
-        username   = user.get("username", f"tg_{tg_id}")
-        first_name = user.get("first_name", "")
-        last_name  = user.get("last_name", "")
-        avatar     = user.get("photo_url", "")
-
-        # Регистрируем / обновляем пользователя
-        register_user(tg_id, username)
-
-        web_user = {
-            "user_id":    tg_id,
-            "email":      f"{username}@telegram",
-            "first_name": first_name,
-            "last_name":  last_name,
-            "avatar":     avatar,
-            "provider":   "telegram",
-            "username":   username,
-        }
-        return jsonify({"ok": True, "user": web_user})
-
-    except Exception as e:
-        print("auth_telegram error:", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-@app.route("/api/auth/email", methods=["POST", "OPTIONS"])
-def auth_email():
-    """Email/password авторизация. В продакшне добавить хэширование паролей."""
-    if request.method == "OPTIONS":
-        return "", 204
-    try:
-        import hashlib as _hl
-        import database as _db
-
-        data       = request.json or {}
-        action     = data.get("action", "signin")
-        email      = data.get("email", "").lower().strip()
-        password   = data.get("password", "")
-        first_name = data.get("first_name", "")
-        last_name  = data.get("last_name", "")
-
-        if not email or not password:
-            return jsonify({"ok": False, "error": "Missing email or password"}), 400
-
-        pw_hash = _hl.sha256(password.encode()).hexdigest()
-
-        if action == "signup":
-            _db.cursor.execute("SELECT user_id FROM users WHERE username = ?", (email,))
-            if _db.cursor.fetchone():
-                return jsonify({"ok": False, "error": "Email already registered"}), 409
-
-            user_id = abs(hash(email + pw_hash)) % (10**12)
-            _db.cursor.execute(
-                "INSERT OR IGNORE INTO users (user_id, username, joined_at, role) VALUES (?, ?, ?, ?)",
-                (user_id, email, datetime.now().strftime("%d.%m.%Y %H:%M"), "default user")
-            )
-            _db.cursor.execute(
-                "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
-                (f"pw_{email}", pw_hash)
-            )
-            _db.conn.commit()
-            user = _upsert_web_user(email, first_name, last_name, "", "email")
-            return jsonify({"ok": True, "verify": False, "user": user})
-
-        else:
-            stored = get_setting(f"pw_{email}")
-            if not stored or stored != pw_hash:
-                return jsonify({"ok": False, "error": "Invalid email or password"}), 401
-            user = _upsert_web_user(email, "", "", "", "email")
-            return jsonify({"ok": True, "user": user})
-
-    except Exception as e:
-        print("auth_email error:", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-@app.route("/api/bot_info", methods=["GET"])
-def api_bot_info():
-    try:
-        info = bot.get_me()
-        return jsonify({"bot_id": info.id, "username": info.username})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1655,41 +1313,13 @@ def keep_alive():
             print(f"keep_alive error: {e}")
 
 
-def start_polling():
-    """Запускает polling с защитой от 409 конфликта."""
-    import time as _time
-    # Сначала удаляем webhook если есть
-    try:
-        bot.delete_webhook(drop_pending_updates=True)
-        print("Webhook cleared.")
-    except Exception as e:
-        print(f"Webhook clear error: {e}")
-
-    retries = 0
-    while True:
-        try:
-            print("Starting polling...")
-            bot.infinity_polling(timeout=20, long_polling_timeout=5)
-            break
-        except Exception as e:
-            err = str(e)
-            if "409" in err or "Conflict" in err:
-                retries += 1
-                wait = min(30, 5 * retries)
-                print(f"409 Conflict — another instance running. Retry in {wait}s...")
-                _time.sleep(wait)
-            else:
-                print(f"Polling error: {e}")
-                _time.sleep(5)
-
-
 try:
     print("bot is running...")
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
     keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
     keep_alive_thread.start()
-    start_polling()
+    bot.infinity_polling(timeout=20, long_polling_timeout=5)
 except KeyboardInterrupt:
     print("Stopped.")
 except Exception as e:
