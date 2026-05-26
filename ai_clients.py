@@ -5,22 +5,41 @@ import random
 import re
 from google import genai
 from google.genai import types as genai_types
+from openai import OpenAI
 
 # ── Ключи ─────────────────────────────────────────────────────────────────
 
-GEMINI_FREE_KEYS = [
-    os.environ.get("GEMINI_FREE_KEY_1", ""),
-    os.environ.get("GEMINI_FREE_KEY_2", ""),
-    os.environ.get("GEMINI_FREE_KEY_3", ""),
+# Elyon Core (бесплатная) — 2 ключа
+DEEPSEEK_FREE_KEYS = [
+    os.environ.get("DEEPSEEK_FREE_KEY_1", ""),
+    os.environ.get("DEEPSEEK_FREE_KEY_2", ""),
 ]
-GEMINI_FREE_KEYS = [k for k in GEMINI_FREE_KEYS if k]
+DEEPSEEK_FREE_KEYS = [k for k in DEEPSEEK_FREE_KEYS if k]
 
+# Elyon Nova — 2 ключа
+GEMINI_NOVA_KEYS = [
+    os.environ.get("GEMINI_NOVA_KEY_1", ""),
+    os.environ.get("GEMINI_NOVA_KEY_2", ""),
+]
+GEMINI_NOVA_KEYS = [k for k in GEMINI_NOVA_KEYS if k]
+
+# Elyon PRO — 2 ключа
 GEMINI_PRO_KEYS = [
     os.environ.get("GEMINI_PRO_KEY_1", ""),
     os.environ.get("GEMINI_PRO_KEY_2", ""),
-    os.environ.get("GEMINI_PRO_KEY_3", ""),
 ]
 GEMINI_PRO_KEYS = [k for k in GEMINI_PRO_KEYS if k]
+
+# Elyon Absolution — 2 ключа
+GEMINI_ABS_KEYS = [
+    os.environ.get("GEMINI_ABS_KEY_1", ""),
+    os.environ.get("GEMINI_ABS_KEY_2", ""),
+]
+GEMINI_ABS_KEYS = [k for k in GEMINI_ABS_KEYS if k]
+
+# Обратная совместимость — если новые ключи не заданы, используем старые PRO
+if not GEMINI_NOVA_KEYS: GEMINI_NOVA_KEYS = GEMINI_PRO_KEYS
+if not GEMINI_ABS_KEYS:  GEMINI_ABS_KEYS  = GEMINI_PRO_KEYS
 
 # ── Системный промпт ───────────────────────────────────────────────────────
 
@@ -201,29 +220,51 @@ def ask_gemini_with_keys(messages, keys, model, thinking=False, use_search=False
 
     raise Exception("Лимит запросов исчерпан. Попробуй через минуту.")
 
-# ── Бесплатная модель ─────────────────────────────────────────────────────
+# ── Elyon Core (бесплатная) ───────────────────────────────────────
 
 def ask_gpt(messages):
     last_msg = messages[-1]["content"] if messages else ""
     use_search = needs_search(last_msg)
-    if use_search:
-        print(f"[Core] Web search enabled for: {last_msg[:60]}")
-    return ask_gemini_with_keys(
-        messages, GEMINI_FREE_KEYS, "gemini-2.5-flash",
+    return ask_deepseek_with_keys(
+        messages, DEEPSEEK_FREE_KEYS, "deepseek-v4-flash",
         thinking=False, use_search=use_search
     )
 
-# ── Платная модель ────────────────────────────────────────────────────────
+# ── Elyon Nova ────────────────────────────────────────────────────
 
-def ask_gemini(messages):
+def ask_nova(messages):
     last_msg = messages[-1]["content"] if messages else ""
     use_search = needs_search(last_msg)
-    if use_search:
-        print(f"[Nova] Web search enabled for: {last_msg[:60]}")
+    return ask_gemini_with_keys(
+        messages, GEMINI_NOVA_KEYS, "gemini-2.5-flash",
+        thinking=True, use_search=use_search
+    )
+
+# ── Elyon PRO ─────────────────────────────────────────────────────
+
+def ask_pro(messages):
+    last_msg = messages[-1]["content"] if messages else ""
+    use_search = needs_search(last_msg)
     return ask_gemini_with_keys(
         messages, GEMINI_PRO_KEYS, "gemini-2.5-flash",
         thinking=True, use_search=use_search
     )
+
+# ── Elyon Absolution ──────────────────────────────────────────────
+
+def ask_absolution(messages):
+    last_msg = messages[-1]["content"] if messages else ""
+    use_search = needs_search(last_msg)
+    return ask_gemini_with_keys(
+        messages, GEMINI_ABS_KEYS, "gemini-2.5-pro",
+        thinking=True, use_search=use_search
+    )
+
+# ── Обратная совместимость ────────────────────────────────────────
+
+def ask_gemini(messages):
+    """Алиас — обратная совместимость для старых вызовов."""
+    return ask_nova(messages)
 
 # ── Запрос с файлом ───────────────────────────────────────────────────────
 
@@ -300,23 +341,16 @@ def ask_with_file(file_bytes, mime_type, file_name, user_prompt, history, use_pr
 # ── Проверка исчерпанности ключей ─────────────────────────────────────────
 
 def check_keys_status():
-    """
-    Проверяет статус всех ключей.
-    Возвращает dict с результатами по каждому ключу.
-    """
-    results = {"free": [], "pro": []}
+    """Проверяет статус всех ключей."""
+    results = {"core": [], "nova": [], "pro": [], "absolution": []}
 
-    def test_key(key, label):
+    def test_key(key):
         try:
             client = genai.Client(api_key=key)
-            cfg = genai_types.GenerateContentConfig()
-            response = client.models.generate_content(
+            client.models.generate_content(
                 model="gemini-2.5-flash",
-                contents=[genai_types.Content(
-                    role="user",
-                    parts=[genai_types.Part(text="Hi")]
-                )],
-                config=cfg
+                contents=[genai_types.Content(role="user", parts=[genai_types.Part(text="Hi")])],
+                config=genai_types.GenerateContentConfig()
             )
             return {"key": key[:8] + "...", "status": "ok"}
         except Exception as e:
@@ -325,12 +359,13 @@ def check_keys_status():
                 return {"key": key[:8] + "...", "status": "exhausted"}
             elif "401" in err or "API_KEY_INVALID" in err:
                 return {"key": key[:8] + "...", "status": "invalid"}
+            elif "503" in err:
+                return {"key": key[:8] + "...", "status": "unavailable"}
             else:
-                return {"key": key[:8] + "...", "status": f"error: {err[:50]}"}
+                return {"key": key[:8] + "...", "status": f"error: {err[:40]}"}
 
-    for k in GEMINI_FREE_KEYS:
-        results["free"].append(test_key(k, "free"))
-    for k in GEMINI_PRO_KEYS:
-        results["pro"].append(test_key(k, "pro"))
-
+    for k in GEMINI_FREE_KEYS:  results["core"].append(test_key(k))
+    for k in GEMINI_NOVA_KEYS:  results["nova"].append(test_key(k))
+    for k in GEMINI_PRO_KEYS:   results["pro"].append(test_key(k))
+    for k in GEMINI_ABS_KEYS:   results["absolution"].append(test_key(k))
     return results
