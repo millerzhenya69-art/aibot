@@ -1237,7 +1237,7 @@ def api_chat():
             return jsonify({"error": "Missing user_id or messages"}), 400
         if is_maintenance() and not (user_id == OWNER_ID and not owner_test_mode):
             return jsonify({"error": "Maintenance in progress"}), 503
-        if model == "gemini" or model == "nova":
+        if model in ("gemini", "nova"):
             if not has_active_sub(user_id):
                 return jsonify({"error": "No active subscription"}), 403
             reply = ask_nova(messages)
@@ -1250,6 +1250,7 @@ def api_chat():
                 return jsonify({"error": "No active subscription"}), 403
             reply = ask_absolution(messages)
         else:
+            # Core — DeepSeek
             reply = ask_gpt(messages)
 
         # Проверка дневного лимита (owner в обычном режиме — без лимита)
@@ -1362,8 +1363,12 @@ def api_file_b64():
                 ".webp": "image/webp", ".pdf": "application/pdf",
             }
             mime_type = mime_map.get(ext, "text/plain")
-        use_pro = model == "gemini"
-        reply = ask_with_file(file_bytes, mime_type, file_name, prompt, history, use_pro=use_pro)
+        tier_map   = {"gpt": "core", "core": "core", "nova": "nova",
+                      "gemini": "nova", "pro": "pro", "absolution": "absolution"}
+        use_pro    = model in ("gemini", "nova", "pro", "absolution")
+        model_tier = tier_map.get(model, "core")
+        reply = ask_with_file(file_bytes, mime_type, file_name, prompt,
+                              history, use_pro=use_pro, model_tier=model_tier)
         log_session_activity(user_id, "miniapp")
         return jsonify({"reply": reply})
     except Exception as e:
@@ -1405,8 +1410,12 @@ def api_file():
                 ".css": "text/css", ".sql": "text/plain",
             }
             mime_type = mime_map.get(ext, "text/plain")
-        use_pro = model == "gemini"
-        reply = ask_with_file(file_bytes, mime_type, file_name, prompt, history, use_pro=use_pro)
+        tier_map   = {"gpt": "core", "core": "core", "nova": "nova",
+                      "gemini": "nova", "pro": "pro", "absolution": "absolution"}
+        use_pro    = model in ("gemini", "nova", "pro", "absolution")
+        model_tier = tier_map.get(model, "core")
+        reply = ask_with_file(file_bytes, mime_type, file_name, prompt,
+                              history, use_pro=use_pro, model_tier=model_tier)
         return jsonify({"reply": reply})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
