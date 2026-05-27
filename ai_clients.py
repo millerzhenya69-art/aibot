@@ -5,41 +5,56 @@ import random
 import re
 from google import genai
 from google.genai import types as genai_types
-from openai import OpenAI
 
 # ── Ключи ─────────────────────────────────────────────────────────────────
 
-# Elyon Core (бесплатная) — 2 ключа
-DEEPSEEK_FREE_KEYS = [
-    os.environ.get("DEEPSEEK_FREE_KEY_1", ""),
-    os.environ.get("DEEPSEEK_FREE_KEY_2", ""),
+# Elyon Core (бесплатная) — DeepSeek, 2 ключа
+DEEPSEEK_KEYS = [
+    os.environ.get("DEEPSEEK_KEY_1", ""),
+    os.environ.get("DEEPSEEK_KEY_2", ""),
 ]
-DEEPSEEK_FREE_KEYS = [k for k in DEEPSEEK_FREE_KEYS if k]
+DEEPSEEK_KEYS = [k for k in DEEPSEEK_KEYS if k]
 
-# Elyon Nova — 2 ключа
+# Elyon Nova — Gemini Flash с thinking, 2 ключа
 GEMINI_NOVA_KEYS = [
     os.environ.get("GEMINI_NOVA_KEY_1", ""),
     os.environ.get("GEMINI_NOVA_KEY_2", ""),
 ]
 GEMINI_NOVA_KEYS = [k for k in GEMINI_NOVA_KEYS if k]
 
-# Elyon PRO — 2 ключа
+# Elyon PRO — Gemini Flash с расширенным thinking, 2 ключа
 GEMINI_PRO_KEYS = [
     os.environ.get("GEMINI_PRO_KEY_1", ""),
     os.environ.get("GEMINI_PRO_KEY_2", ""),
 ]
 GEMINI_PRO_KEYS = [k for k in GEMINI_PRO_KEYS if k]
 
-# Elyon Absolution — 2 ключа
+# Elyon Absolution — Gemini Pro, 2 ключа
 GEMINI_ABS_KEYS = [
     os.environ.get("GEMINI_ABS_KEY_1", ""),
     os.environ.get("GEMINI_ABS_KEY_2", ""),
 ]
 GEMINI_ABS_KEYS = [k for k in GEMINI_ABS_KEYS if k]
 
-# Обратная совместимость — если новые ключи не заданы, используем старые PRO
-if not GEMINI_NOVA_KEYS: GEMINI_NOVA_KEYS = GEMINI_PRO_KEYS
-if not GEMINI_ABS_KEYS:  GEMINI_ABS_KEYS  = GEMINI_PRO_KEYS
+# Обратная совместимость для Telegram бота
+# Если отдельные ключи не заданы — используем старые переменные
+if not DEEPSEEK_KEYS:
+    # Fallback на Gemini для Core если DeepSeek не настроен
+    _fb_free = [os.environ.get(f"GEMINI_FREE_KEY_{i}", "") for i in range(1, 4)]
+    DEEPSEEK_KEYS = [k for k in _fb_free if k]
+
+if not GEMINI_NOVA_KEYS:
+    _fb_pro = [os.environ.get(f"GEMINI_PRO_KEY_{i}", "") for i in range(1, 4)]
+    GEMINI_NOVA_KEYS = [k for k in _fb_pro if k]
+
+if not GEMINI_PRO_KEYS and GEMINI_NOVA_KEYS:
+    GEMINI_PRO_KEYS = GEMINI_NOVA_KEYS
+
+if not GEMINI_ABS_KEYS and GEMINI_PRO_KEYS:
+    GEMINI_ABS_KEYS = GEMINI_PRO_KEYS
+
+# Для обратной совместимости в bot.py
+GEMINI_FREE_KEYS = DEEPSEEK_KEYS
 
 # ── Системный промпт ───────────────────────────────────────────────────────
 
@@ -178,6 +193,63 @@ def needs_search(text):
             return True
     return False
 
+# ── Общая функция запроса к DeepSeek ─────────────────────────────
+
+def ask_deepseek_with_keys(messages, keys):
+    """Запрос к DeepSeek через OpenAI-совместимый API."""
+    if not keys:
+        # Fallback на Gemini если DeepSeek ключи не настроены
+        return ask_gemini_with_keys(
+            messages, GEMINI_NOVA_KEYS or GEMINI_PRO_KEYS,
+            "gemini-2.5-flash", thinking=False
+        )
+
+    import urllib.request
+    import json as _json
+
+    shuffled = keys.copy()
+    random.shuffle(shuffled)
+
+    # Конвертируем историю в формат OpenAI
+    openai_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    for msg in messages:
+        role = "assistant" if msg["role"] == "assistant" else "user"
+        openai_messages.append({"role": role, "content": str(msg["content"])})
+
+    for key in shuffled:
+        try:
+            payload = _json.dumps({
+                "model":       "deepseek-chat",
+                "messages":    openai_messages,
+                "temperature": 0.7,
+                "max_tokens":  2048,
+            }).encode("utf-8")
+
+            req = urllib.request.Request(
+                "https://api.deepseek.com/v1/chat/completions",
+                data=payload,
+                headers={
+                    "Content-Type":  "application/json",
+                    "Authorization": f"Bearer {key}",
+                },
+                method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = _json.loads(resp.read().decode("utf-8"))
+                text = data["choices"][0]["message"]["content"]
+                return safe_text(text)
+
+        except Exception as e:
+            err = str(e)
+            print(f"DeepSeek key error: {err[:120]}")
+            if "429" in err or "quota" in err.lower():
+                continue
+            if "503" in err or "502" in err:
+                continue
+            raise
+
+    raise Exception("DeepSeek лимит исчерпан. Попробуй через минуту.")
+
 # ── Общая функция запроса к Gemini ────────────────────────────────────────
 
 def ask_gemini_with_keys(messages, keys, model, thinking=False, use_search=False):
@@ -220,15 +292,11 @@ def ask_gemini_with_keys(messages, keys, model, thinking=False, use_search=False
 
     raise Exception("Лимит запросов исчерпан. Попробуй через минуту.")
 
-# ── Elyon Core (бесплатная) ───────────────────────────────────────
+# ── Elyon Core — DeepSeek ─────────────────────────────────────────
 
 def ask_gpt(messages):
-    last_msg = messages[-1]["content"] if messages else ""
-    use_search = needs_search(last_msg)
-    return ask_deepseek_with_keys(
-        messages, DEEPSEEK_FREE_KEYS, "deepseek-v4-flash",
-        thinking=False, use_search=use_search
-    )
+    """Elyon Core использует DeepSeek."""
+    return ask_deepseek_with_keys(messages, DEEPSEEK_KEYS)
 
 # ── Elyon Nova ────────────────────────────────────────────────────
 
@@ -268,10 +336,31 @@ def ask_gemini(messages):
 
 # ── Запрос с файлом ───────────────────────────────────────────────────────
 
-def ask_with_file(file_bytes, mime_type, file_name, user_prompt, history, use_pro=False):
-    """Отправляет файл + текст в Gemini для анализа."""
-    keys = GEMINI_PRO_KEYS if use_pro else GEMINI_FREE_KEYS
-    model = "gemini-2.5-flash"
+def ask_with_file(file_bytes, mime_type, file_name, user_prompt, history,
+                  use_pro=False, model_tier="core"):
+    """
+    Отправляет файл + текст в Gemini для анализа.
+    DeepSeek не поддерживает файлы — для Core используем Nova ключи.
+    model_tier: 'core' | 'nova' | 'pro' | 'absolution'
+    """
+    # Выбираем ключи по тиру
+    if model_tier == "absolution":
+        keys  = GEMINI_ABS_KEYS or GEMINI_PRO_KEYS
+        model = "gemini-2.5-pro"
+        thinking = True
+    elif model_tier == "pro":
+        keys  = GEMINI_PRO_KEYS or GEMINI_NOVA_KEYS
+        model = "gemini-2.5-flash"
+        thinking = True
+    elif model_tier == "nova" or use_pro:
+        keys  = GEMINI_NOVA_KEYS or GEMINI_PRO_KEYS
+        model = "gemini-2.5-flash"
+        thinking = True
+    else:
+        # Core — DeepSeek не умеет файлы, используем Nova ключи
+        keys  = GEMINI_NOVA_KEYS or GEMINI_PRO_KEYS or GEMINI_ABS_KEYS
+        model = "gemini-2.5-flash"
+        thinking = False
 
     if not keys:
         raise Exception("NO_KEYS: ключи не настроены")
@@ -310,7 +399,7 @@ def ask_with_file(file_bytes, mime_type, file_name, user_prompt, history, use_pr
             cfg = genai_types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT
             )
-            if use_pro:
+            if thinking:
                 cfg.thinking_config = genai_types.ThinkingConfig(thinking_budget=8000)
 
             response = client.models.generate_content(
@@ -342,9 +431,9 @@ def ask_with_file(file_bytes, mime_type, file_name, user_prompt, history, use_pr
 
 def check_keys_status():
     """Проверяет статус всех ключей."""
-    results = {"core": [], "nova": [], "pro": [], "absolution": []}
+    results = {"core_deepseek": [], "nova": [], "pro": [], "absolution": []}
 
-    def test_key(key):
+    def test_gemini(key):
         try:
             client = genai.Client(api_key=key)
             client.models.generate_content(
@@ -361,11 +450,32 @@ def check_keys_status():
                 return {"key": key[:8] + "...", "status": "invalid"}
             elif "503" in err:
                 return {"key": key[:8] + "...", "status": "unavailable"}
-            else:
-                return {"key": key[:8] + "...", "status": f"error: {err[:40]}"}
+            return {"key": key[:8] + "...", "status": f"error: {err[:40]}"}
 
-    for k in GEMINI_FREE_KEYS:  results["core"].append(test_key(k))
-    for k in GEMINI_NOVA_KEYS:  results["nova"].append(test_key(k))
-    for k in GEMINI_PRO_KEYS:   results["pro"].append(test_key(k))
-    for k in GEMINI_ABS_KEYS:   results["absolution"].append(test_key(k))
+    def test_deepseek(key):
+        import urllib.request, json as _j
+        try:
+            payload = _j.dumps({
+                "model": "deepseek-chat",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "max_tokens": 5
+            }).encode()
+            req = urllib.request.Request(
+                "https://api.deepseek.com/v1/chat/completions",
+                data=payload,
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+                method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=10):
+                return {"key": key[:8] + "...", "status": "ok"}
+        except Exception as e:
+            err = str(e)
+            if "429" in err: return {"key": key[:8] + "...", "status": "exhausted"}
+            if "401" in err: return {"key": key[:8] + "...", "status": "invalid"}
+            return {"key": key[:8] + "...", "status": f"error: {err[:40]}"}
+
+    for k in DEEPSEEK_KEYS:    results["core_deepseek"].append(test_deepseek(k))
+    for k in GEMINI_NOVA_KEYS: results["nova"].append(test_gemini(k))
+    for k in GEMINI_PRO_KEYS:  results["pro"].append(test_gemini(k))
+    for k in GEMINI_ABS_KEYS:  results["absolution"].append(test_gemini(k))
     return results
