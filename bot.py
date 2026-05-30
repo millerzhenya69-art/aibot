@@ -97,19 +97,29 @@ def is_subscribed(user_id):
 # ── Цены ──────────────────────────────────────────────────────────────────
 
 PRICES = {
-    "month":    {"stars": 30,  "label": "30 дней — 30 ⭐",    "days": 30,  "rub": 50},
-    "halfyear": {"stars": 60,  "label": "6 месяцев — 60 ⭐",  "days": 180, "rub": 182},
-    "forever":  {"stars": 120, "label": "Навсегда — 120 ⭐",  "days": 0,   "rub": 429},
+    "nova":       {"stars": 50,  "label": "Elyon Nova — 50 ⭐",       "days": 30, "rub": 91},
+    "pro":        {"stars": 100, "label": "Elyon PRO — 100 ⭐",        "days": 30, "rub": 182},
+    "absolution": {"stars": 150, "label": "Elyon Absolution — 150 ⭐", "days": 30, "rub": 265},
+    # Обратная совместимость
+    "month":    {"stars": 50,  "label": "Elyon Nova — 50 ⭐",       "days": 30,  "rub": 91},
+    "halfyear": {"stars": 100, "label": "Elyon PRO — 100 ⭐",        "days": 180, "rub": 182},
+    "forever":  {"stars": 150, "label": "Elyon Absolution — 150 ⭐", "days": 0,   "rub": 265},
 }
 CRYPTO_PRICES = {
-    "month":    {"amount": "0.55", "label": "30 дней — 50 ₽"},
-    "halfyear": {"amount": "1.10", "label": "6 месяцев — 182 ₽"},
-    "forever":  {"amount": "2.20", "label": "Навсегда — 429 ₽"},
+    "nova":       {"amount": "1.00", "label": "Elyon Nova — 91 ₽"},
+    "pro":        {"amount": "2.00", "label": "Elyon PRO — 182 ₽"},
+    "absolution": {"amount": "2.90", "label": "Elyon Absolution — 265 ₽"},
+    "month":    {"amount": "1.00", "label": "Elyon Nova — 91 ₽"},
+    "halfyear": {"amount": "2.00", "label": "Elyon PRO — 182 ₽"},
+    "forever":  {"amount": "2.90", "label": "Elyon Absolution — 265 ₽"},
 }
 VIRTUAL_PRICES = {
-    "month":    {"rub": 50,  "label": "30 дней — 50 монет"},
-    "halfyear": {"rub": 182, "label": "6 месяцев — 182 монеты"},
-    "forever":  {"rub": 429, "label": "Навсегда — 429 монет"},
+    "nova":       {"rub": 91,  "label": "Elyon Nova — 91 монета"},
+    "pro":        {"rub": 182, "label": "Elyon PRO — 182 монеты"},
+    "absolution": {"rub": 265, "label": "Elyon Absolution — 265 монет"},
+    "month":    {"rub": 91,  "label": "Elyon Nova — 91 монета"},
+    "halfyear": {"rub": 182, "label": "Elyon PRO — 182 монеты"},
+    "forever":  {"rub": 265, "label": "Elyon Absolution — 265 монет"},
 }
 STARS_PER_RUB = 1 / 1.82
 RUB_PER_DAY   = 50 / 30
@@ -408,6 +418,47 @@ def start(message):
             pass
     bot.send_message(message.chat.id, "Загрузка...", reply_markup=main_menu_keyboard(user_id))
     show_start(message.chat.id, user_id)
+
+
+# ── /auth — авторизация на сайте ──────────────────────────────────────────
+
+import secrets as _secrets
+
+# Хранилище токенов {token: {user_id, username, first_name, expires}}
+_auth_tokens = {}
+
+@bot.message_handler(commands=["auth"])
+def cmd_auth(message):
+    user_id    = message.from_user.id
+    username   = message.from_user.username or ""
+    first_name = message.from_user.first_name or ""
+
+    token   = _secrets.token_urlsafe(24)
+    expires = datetime.now().timestamp() + 300  # 5 минут
+
+    _auth_tokens[token] = {
+        "user_id":    user_id,
+        "username":   username,
+        "first_name": first_name,
+        "expires":    expires,
+    }
+
+    user     = get_user(user_id)
+    sub_type = user[5] if user else "none"
+    sub_label = sub_type if sub_type != "none" else "нет подписки"
+
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton(
+        "✅ Войти на сайт Elyon AI",
+        url=f"https://elyon-ai-web.vercel.app/auth.html?tg_token={token}"
+    ))
+    bot.send_message(
+        message.chat.id,
+        f"🔐 Авторизация на сайте\n\n"
+        f"Нажми кнопку — она действует 5 минут.\n\n"
+        f"Подписка: {sub_label}",
+        reply_markup=markup
+    )
 
 
 # ── /give — выдача подписки / роли ────────────────────────────────────────
@@ -1671,6 +1722,51 @@ def api_bot_info():
         return jsonify({"bot_id": info.id, "username": info.username})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/auth/telegram_token", methods=["POST", "OPTIONS"])
+def auth_telegram_token():
+    """Верифицирует токен из /auth команды бота."""
+    if request.method == "OPTIONS":
+        return "", 204
+    try:
+        data  = request.json or {}
+        token = data.get("token", "")
+        if not token:
+            return jsonify({"ok": False, "error": "Missing token"}), 400
+
+        info = _auth_tokens.get(token)
+        if not info:
+            return jsonify({"ok": False, "error": "Invalid or already used token"}), 401
+
+        if datetime.now().timestamp() > info["expires"]:
+            _auth_tokens.pop(token, None)
+            return jsonify({"ok": False, "error": "Token expired. Use /auth again in bot."}), 401
+
+        # Одноразовый — удаляем после использования
+        _auth_tokens.pop(token, None)
+
+        user_id  = info["user_id"]
+        username = info["username"]
+        register_user(user_id, username)
+        user     = get_user(user_id)
+        sub_type = user[5] if user else "none"
+
+        web_user = {
+            "user_id":    user_id,
+            "email":      f"{username}@telegram" if username else f"tg_{user_id}@telegram",
+            "first_name": info["first_name"],
+            "last_name":  "",
+            "avatar":     "",
+            "provider":   "telegram",
+            "username":   username,
+            "sub_type":   sub_type,
+        }
+        return jsonify({"ok": True, "user": web_user})
+
+    except Exception as e:
+        print("auth_telegram_token error:", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/health", methods=["GET"])
