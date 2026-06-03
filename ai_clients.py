@@ -295,25 +295,17 @@ def ask_gemini_with_keys(messages, keys, model, thinking=False, use_search=False
 # ── Elyon Core — DeepSeek ─────────────────────────────────────────
 
 def ask_gpt(messages):
-    """Elyon Core — DeepSeek с fallback на Gemini если нет баланса."""
-    if not DEEPSEEK_KEYS:
-        # DeepSeek не настроен — используем Gemini
-        return ask_gemini_with_keys(
-            messages, GEMINI_NOVA_KEYS or GEMINI_PRO_KEYS,
-            "gemini-2.5-flash", thinking=False
-        )
-    try:
-        return ask_deepseek_with_keys(messages, DEEPSEEK_KEYS)
-    except Exception as e:
-        err = str(e)
-        # 402 Payment Required или любая ошибка биллинга — fallback на Gemini
-        if "402" in err or "payment" in err.lower() or "billing" in err.lower() or "insufficient" in err.lower():
-            print(f"[Core] DeepSeek billing error, falling back to Gemini: {err[:80]}")
-            return ask_gemini_with_keys(
-                messages, GEMINI_NOVA_KEYS or GEMINI_PRO_KEYS,
-                "gemini-2.5-flash", thinking=False
-            )
-        raise
+    """Elyon Core — Gemini Flash без thinking (бесплатно, надёжно)."""
+    last_msg   = messages[-1]["content"] if messages else ""
+    use_search = needs_search(last_msg)
+    # Используем Nova ключи для Core — те же ключи, без thinking
+    keys = GEMINI_NOVA_KEYS or GEMINI_PRO_KEYS or GEMINI_ABS_KEYS
+    if not keys:
+        raise Exception("NO_KEYS: настрой GEMINI_NOVA_KEY_1 в переменных окружения")
+    return ask_gemini_with_keys(
+        messages, keys, "gemini-2.5-flash",
+        thinking=False, use_search=use_search
+    )
 
 # ── Elyon Nova ────────────────────────────────────────────────────
 
