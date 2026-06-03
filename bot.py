@@ -386,29 +386,36 @@ def handle_file_message(message, user_id, ai_model):
 @bot.message_handler(commands=["start"])
 def start(message):
     user_id = message.from_user.id
+    args    = message.text.split()
+    param   = args[1] if len(args) > 1 else None
 
-    # Owner без тест-режима — пропускаем проверку
-    if not is_privileged(user_id) and not is_subscribed(user_id):
-        args = message.text.split()
-        if len(args) > 1:
-            user_states[user_id] = {"pending_ref": args[1]}
-        send_subscribe_prompt(message.chat.id)
+    # Deep link с оплатой с сайта: /start pay_nova, pay_pro, pay_abs
+    if param and param.startswith("pay_"):
+        tier_map = {"pay_nova": "nova", "pay_pro": "pro", "pay_abs": "absolution"}
+        tier = tier_map.get(param)
+        register_user(user_id, message.from_user.username or "")
+        if tier:
+            _show_single_tier_payment(message.chat.id, user_id, tier)
+        else:
+            _show_all_tiers_payment(message.chat.id, user_id)
         return
 
-    args = message.text.split()
+    # Deep link авторизации с сайта
+    if param == "auth":
+        register_user(user_id, message.from_user.username or "")
+        bot.send_message(
+            message.chat.id,
+            "Напиши /auth чтобы получить ссылку для входа на сайт Elyon AI."
+        )
+        return
+
+    # Обычный /start с рефералом
     referred_by = None
-    if len(args) > 1:
+    if param:
         try:
-            referred_by = int(args[1])
+            referred_by = int(param)
         except:
             pass
-    # Проверяем отложенный реферал (если пришёл через реферальную ссылку до подписки)
-    if user_id in user_states and "pending_ref" in user_states[user_id]:
-        try:
-            referred_by = int(user_states[user_id]["pending_ref"])
-        except:
-            pass
-        del user_states[user_id]
 
     is_new = register_user(user_id, message.from_user.username or "", referred_by)
     if is_new and referred_by:
@@ -590,7 +597,93 @@ def cmd_give(message):
         "Неизвестное действие. Используй: nova / role / remove")
 
 
-# ── /pay — выдача монет пользователю ─────────────────────────────────────
+# ── /pay — быстрая оплата подписки (вызывается с сайта) ───────────────────
+
+@bot.message_handler(commands=["pay"])
+def cmd_pay_subscription(message):
+    """
+    /pay        — показывает все тарифы
+    /pay nova   — сразу показывает оплату Nova
+    /pay pro    — сразу показывает оплату PRO
+    /pay abs    — сразу показывает оплату Absolution
+    """
+    parts = message.text.strip().split()
+    tier  = parts[1].lower() if len(parts) > 1 else None
+
+    # Если команда от owner для выдачи монет — обрабатываем отдельно
+    if message.from_user.id == OWNER_ID and tier and tier.startswith("@"):
+        # Это старая команда /pay @username сумма — пропускаем в cmd_pay_coins
+        return
+
+    tier_map = {
+        "nova": "nova", "n": "nova",
+        "pro": "pro", "p": "pro",
+        "abs": "absolution", "absolution": "absolution", "a": "absolution",
+    }
+    target_tier = tier_map.get(tier) if tier else None
+
+    if target_tier:
+        _show_single_tier_payment(message.chat.id, message.from_user.id, target_tier)
+    else:
+        _show_all_tiers_payment(message.chat.id, message.from_user.id)
+
+
+def _show_single_tier_payment(chat_id, user_id, tier):
+    """Показывает оплату для конкретного тарифа."""
+    tier_info = {
+        "nova":       {"label": "Elyon Nova",       "stars": 50,  "rub": 91,  "desc": "25 сообщений/день"},
+        "pro":        {"label": "Elyon PRO",         "stars": 100, "rub": 182, "desc": "40 сообщений/день"},
+        "absolution": {"label": "Elyon Absolution",  "stars": 150, "rub": 265, "desc": "50 сообщений/день"},
+    }
+    info = tier_info.get(tier)
+    if not info:
+        return
+
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        types.InlineKeyboardButton(
+            f"⭐ Оплатить {info['stars']} звёздами",
+            callback_data=f"pay_stars_{tier}"
+        ),
+        types.InlineKeyboardButton(
+            f"💳 Оплатить {info['rub']} ₽ через CryptoBot",
+            callback_data=f"pay_crypto_{tier}"
+        ),
+    )
+    bot.send_message(
+        chat_id,
+        f"⭐ {info['label']}\n\n"
+        f"{info['desc']} · 30 дней\n\n"
+        f"Выбери способ оплаты:",
+        reply_markup=markup
+    )
+
+
+def _show_all_tiers_payment(chat_id, user_id):
+    """Показывает все тарифы."""
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton("⭐ Nova — 50 звёзд",        callback_data="pay_stars_nova"),
+        types.InlineKeyboardButton("💳 Nova — 91 ₽",             callback_data="pay_crypto_nova"),
+        types.InlineKeyboardButton("⭐ PRO — 100 звёзд",         callback_data="pay_stars_pro"),
+        types.InlineKeyboardButton("💳 PRO — 182 ₽",             callback_data="pay_crypto_pro"),
+        types.InlineKeyboardButton("⭐ Absolution — 150 звёзд",  callback_data="pay_stars_absolution"),
+        types.InlineKeyboardButton("💳 Absolution — 265 ₽",      callback_data="pay_crypto_absolution"),
+    )
+    bot.send_message(
+        chat_id,
+        "⭐ Elyon AI — Подписка\n\n"
+        "Nova — 25 сообщений/день\n"
+        "PRO — 40 сообщений/день\n"
+        "Absolution — 50 сообщений/день\n\n"
+        "Выбери тариф и способ оплаты:",
+        reply_markup=markup
+    )
+
+
+# ── /pay @username сумма — выдача монет (owner) ───────────────────────────
+
+
 
 @bot.message_handler(commands=["pay"])
 def cmd_pay(message):
