@@ -6,30 +6,44 @@ import re
 from google import genai
 from google.genai import types as genai_types
 
-# ── Ключи ─────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════
+# МОДЕЛИ:
+#   Elyon Core        → gemini-2.5-flash-lite  (бесплатно, быстро)
+#   Elyon Nova        → gemini-2.5-flash        (платно, thinking)
+#   Elyon PRO         → gemini-2.5-pro           (платно, thinking)
+#   Elyon Absolution  → gemini-2.5-pro           (платно, thinking+)
+#
+# ЛИМИТЫ (задаются в database.py):
+#   Core        → 15 сообщений/день
+#   Nova        → 30 сообщений/день
+#   PRO         → 30 сообщений/день
+#   Absolution  → 30 сообщений/день
+# ══════════════════════════════════════════════════════════════════
 
-# Elyon Core — Gemini Flash (DeepSeek убран)
+# ── Ключи ─────────────────────────────────────────────────────────
+
+# Nova ключи — используются и для Core (flash-lite), и для Nova (flash)
 GEMINI_NOVA_KEYS = [
     os.environ.get("GEMINI_NOVA_KEY_1", ""),
     os.environ.get("GEMINI_NOVA_KEY_2", ""),
 ]
 GEMINI_NOVA_KEYS = [k for k in GEMINI_NOVA_KEYS if k]
 
-# Elyon PRO — Gemini Flash с расширенным thinking
+# PRO ключи — для PRO и Absolution (gemini-2.5-pro)
 GEMINI_PRO_KEYS = [
     os.environ.get("GEMINI_PRO_KEY_1", ""),
     os.environ.get("GEMINI_PRO_KEY_2", ""),
 ]
 GEMINI_PRO_KEYS = [k for k in GEMINI_PRO_KEYS if k]
 
-# Elyon Absolution — Gemini Pro
+# ABS ключи — для Absolution (если отдельные, иначе fallback на PRO)
 GEMINI_ABS_KEYS = [
     os.environ.get("GEMINI_ABS_KEY_1", ""),
     os.environ.get("GEMINI_ABS_KEY_2", ""),
 ]
 GEMINI_ABS_KEYS = [k for k in GEMINI_ABS_KEYS if k]
 
-# Fallbacks: если отдельные ключи не заданы — используем старые переменные
+# Fallbacks
 if not GEMINI_NOVA_KEYS:
     _fb = [os.environ.get(f"GEMINI_PRO_KEY_{i}", "") for i in range(1, 4)]
     GEMINI_NOVA_KEYS = [k for k in _fb if k]
@@ -43,7 +57,13 @@ if not GEMINI_ABS_KEYS and GEMINI_PRO_KEYS:
 # Обратная совместимость для bot.py
 GEMINI_FREE_KEYS = GEMINI_NOVA_KEYS
 
-# ── Системный промпт ───────────────────────────────────────────────────────
+# ── Названия моделей ──────────────────────────────────────────────
+MODEL_CORE        = "gemini-2.5-flash-lite"   # Elyon Core — быстрая, бесплатная
+MODEL_NOVA        = "gemini-2.5-flash"         # Elyon Nova
+MODEL_PRO         = "gemini-2.5-pro"           # Elyon PRO
+MODEL_ABSOLUTION  = "gemini-2.5-pro"           # Elyon Absolution (тот же pro, но макс. thinking)
+
+# ── Системный промпт ──────────────────────────────────────────────
 
 SYSTEM_PROMPT = (
     "You are Elyon AI — a smart and helpful assistant. "
@@ -60,18 +80,18 @@ SYSTEM_PROMPT = (
     "Use plain dashes or numbers for lists."
 )
 
-# ── Замена упоминаний реальных AI ─────────────────────────────────────────
+# ── Маскировка идентичности ───────────────────────────────────────
 
 REPLACE_PAIRS = [
-    (r'\bGemini\b',        'Elyon'),
+    (r'\bGemini\b',         'Elyon'),
     (r'\bGoogle DeepMind\b','the Elyon team'),
-    (r'\bDeepSeek\b',      'Elyon'),
-    (r'\bChatGPT\b',       'ChatGPT'),
-    (r'\bGPT-[^\s]*',      'GPT'),
-    (r'\bGPT\b',           'GPT'),
-    (r'\bOpenAI\b',        'OpenAI'),
-    (r'\bGrok\b',          'Grok'),
-    (r'\bxAI\b',           'xAI'),
+    (r'\bDeepSeek\b',       'Elyon'),
+    (r'\bChatGPT\b',        'ChatGPT'),
+    (r'\bGPT-[^\s]*',       'GPT'),
+    (r'\bGPT\b',            'GPT'),
+    (r'\bOpenAI\b',         'OpenAI'),
+    (r'\bGrok\b',           'Grok'),
+    (r'\bxAI\b',            'xAI'),
 ]
 
 def mask_identity(text):
@@ -84,36 +104,30 @@ def clean_text(text):
     if not text:
         return text
     code_blocks = {}
-    placeholder_idx = [0]
+    idx = [0]
 
-    def save_code_block(m):
-        key = f"\x00CODE{placeholder_idx[0]}\x00"
-        placeholder_idx[0] += 1
-        lang = m.group(1).strip()
-        code = m.group(2)
-        code_blocks[key] = (lang, code)
+    def save_code(m):
+        key = f"\x00CODE{idx[0]}\x00"; idx[0] += 1
+        code_blocks[key] = (m.group(1).strip(), m.group(2))
         return key
 
-    text = re.sub(r'```(\w*)\n?([\s\S]*?)```', save_code_block, text)
-    text = re.sub(r'`([^`\n]+)`', r'\1', text)
+    text = re.sub(r'```(\w*)\n?([\s\S]*?)```', save_code, text)
+    text = re.sub(r'`([^`\n]+)`',   r'\1', text)
     text = re.sub(r'\*{3}(.+?)\*{3}', r'\1', text, flags=re.DOTALL)
     text = re.sub(r'\*{2}(.+?)\*{2}', r'\1', text, flags=re.DOTALL)
     text = re.sub(r'\*(.+?)\*',       r'\1', text, flags=re.DOTALL)
     text = re.sub(r'_{3}(.+?)_{3}',   r'\1', text, flags=re.DOTALL)
     text = re.sub(r'_{2}(.+?)_{2}',   r'\1', text, flags=re.DOTALL)
     text = re.sub(r'_(.+?)_',         r'\1', text, flags=re.DOTALL)
-    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
-    text = re.sub(r'^\*\s+', '- ', text, flags=re.MULTILINE)
-    text = re.sub(r'^•\s+',  '- ', text, flags=re.MULTILINE)
-    text = re.sub(r'^-{3,}\s*$', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^#{1,6}\s+', '',  text, flags=re.MULTILINE)
+    text = re.sub(r'^\*\s+',  '- ',   text, flags=re.MULTILINE)
+    text = re.sub(r'^•\s+',   '- ',   text, flags=re.MULTILINE)
+    text = re.sub(r'^-{3,}\s*$', '',  text, flags=re.MULTILINE)
     text = re.sub(r'^\*{3,}\s*$', '', text, flags=re.MULTILINE)
-    text = re.sub(r'^>\s+', '', text, flags=re.MULTILINE)
-
+    text = re.sub(r'^>\s+', '',        text, flags=re.MULTILINE)
     for key, (lang, code) in code_blocks.items():
         label = f"[{lang.upper()}]" if lang else "[КОД]"
-        restored = f"{label}\n{code.strip()}"
-        text = text.replace(key, restored)
-
+        text = text.replace(key, f"{label}\n{code.strip()}")
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
@@ -126,21 +140,19 @@ def safe_text(text):
     text = clean_text(text)
     return text
 
-# ── Построение сообщений ──────────────────────────────────────────────────
+# ── Построение истории сообщений ──────────────────────────────────
 
 def build_contents(messages):
     contents = []
     for msg in messages:
         role = "model" if msg["role"] == "assistant" else "user"
-        contents.append(
-            genai_types.Content(
-                role=role,
-                parts=[genai_types.Part(text=str(msg["content"]))]
-            )
-        )
+        contents.append(genai_types.Content(
+            role=role,
+            parts=[genai_types.Part(text=str(msg["content"]))]
+        ))
     return contents
 
-# ── Определяем нужен ли веб-поиск ────────────────────────────────────────
+# ── Определяем нужен ли веб-поиск ────────────────────────────────
 
 SEARCH_TRIGGERS = [
     r'\b(кто такой|who is|who are|расскажи о|tell me about)\b',
@@ -152,20 +164,23 @@ SEARCH_TRIGGERS = [
 
 def needs_search(text):
     text_lower = text.lower()
-    for pattern in SEARCH_TRIGGERS:
-        if re.search(pattern, text_lower, re.IGNORECASE):
-            return True
-    return False
+    return any(re.search(p, text_lower, re.IGNORECASE) for p in SEARCH_TRIGGERS)
 
-# ── Общая функция запроса к Gemini ────────────────────────────────────────
+# ── Основная функция запроса к Gemini ─────────────────────────────
 
-def ask_gemini_with_keys(messages, keys, model, thinking=False, use_search=False):
+def ask_gemini_with_keys(messages, keys, model, thinking_budget=0, use_search=False):
+    """
+    thinking_budget:
+        0     = thinking отключён (Core)
+        1024  = лёгкое thinking (Nova)
+        8000  = глубокое thinking (PRO)
+        16000 = максимальное thinking (Absolution)
+    """
     if not keys:
         raise Exception("NO_KEYS: ключи не настроены в переменных окружения")
 
     shuffled = keys.copy()
     random.shuffle(shuffled)
-    last_error = None
 
     for key in shuffled:
         try:
@@ -173,8 +188,10 @@ def ask_gemini_with_keys(messages, keys, model, thinking=False, use_search=False
             cfg = genai_types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT
             )
-            if thinking:
-                cfg.thinking_config = genai_types.ThinkingConfig(thinking_budget=8000)
+            if thinking_budget > 0:
+                cfg.thinking_config = genai_types.ThinkingConfig(
+                    thinking_budget=thinking_budget
+                )
             if use_search:
                 cfg.tools = [genai_types.Tool(
                     google_search=genai_types.GoogleSearch()
@@ -188,88 +205,99 @@ def ask_gemini_with_keys(messages, keys, model, thinking=False, use_search=False
             return safe_text(response.text)
 
         except Exception as e:
-            error_text = str(e)
-            print(f"Ключ не сработал ({model}): {error_text[:120]}")
-            last_error = error_text
-            if "429" in error_text or "RESOURCE_EXHAUSTED" in error_text:
+            err = str(e)
+            print(f"Key error ({model}): {err[:120]}")
+            if "429" in err or "RESOURCE_EXHAUSTED" in err:
                 continue
-            if "503" in error_text or "UNAVAILABLE" in error_text:
+            if "503" in err or "UNAVAILABLE" in err:
                 continue
             raise
 
     raise Exception("Лимит запросов исчерпан. Попробуй через минуту.")
 
-# ── Elyon Core — Gemini Flash без thinking (бесплатно) ────────────────────
+# ══════════════════════════════════════════════════════════════════
+# ПУБЛИЧНЫЕ ФУНКЦИИ — по одной на каждый тир
+# ══════════════════════════════════════════════════════════════════
 
 def ask_gpt(messages):
-    """Elyon Core — Gemini Flash без thinking."""
-    last_msg   = messages[-1]["content"] if messages else ""
-    use_search = needs_search(last_msg)
+    """
+    Elyon Core — gemini-2.5-flash-lite
+    Быстро, бесплатно, без thinking. Лимит: 15 сообщений/день.
+    """
+    last = messages[-1]["content"] if messages else ""
     keys = GEMINI_NOVA_KEYS or GEMINI_PRO_KEYS or GEMINI_ABS_KEYS
     if not keys:
         raise Exception("NO_KEYS: настрой GEMINI_NOVA_KEY_1 в переменных окружения")
     return ask_gemini_with_keys(
-        messages, keys, "gemini-2.5-flash",
-        thinking=False, use_search=use_search
+        messages, keys, MODEL_CORE,
+        thinking_budget=0,
+        use_search=needs_search(last)
     )
 
-# ── Elyon Nova ────────────────────────────────────────────────────────────
 
 def ask_nova(messages):
-    last_msg = messages[-1]["content"] if messages else ""
-    use_search = needs_search(last_msg)
+    """
+    Elyon Nova — gemini-2.5-flash с thinking.
+    Лимит: 30 сообщений/день.
+    """
+    last = messages[-1]["content"] if messages else ""
     return ask_gemini_with_keys(
-        messages, GEMINI_NOVA_KEYS, "gemini-2.5-flash",
-        thinking=True, use_search=use_search
+        messages, GEMINI_NOVA_KEYS, MODEL_NOVA,
+        thinking_budget=1024,
+        use_search=needs_search(last)
     )
 
-# ── Elyon PRO ─────────────────────────────────────────────────────────────
 
 def ask_pro(messages):
-    last_msg = messages[-1]["content"] if messages else ""
-    use_search = needs_search(last_msg)
+    """
+    Elyon PRO — gemini-2.5-pro с глубоким thinking.
+    Лимит: 30 сообщений/день.
+    """
+    last = messages[-1]["content"] if messages else ""
     return ask_gemini_with_keys(
-        messages, GEMINI_PRO_KEYS, "gemini-2.5-flash",
-        thinking=True, use_search=use_search
+        messages, GEMINI_PRO_KEYS, MODEL_PRO,
+        thinking_budget=8000,
+        use_search=needs_search(last)
     )
 
-# ── Elyon Absolution ──────────────────────────────────────────────────────
 
 def ask_absolution(messages):
-    last_msg = messages[-1]["content"] if messages else ""
-    use_search = needs_search(last_msg)
+    """
+    Elyon Absolution — gemini-2.5-pro с максимальным thinking.
+    Лимит: 30 сообщений/день.
+    """
+    last = messages[-1]["content"] if messages else ""
+    keys = GEMINI_ABS_KEYS or GEMINI_PRO_KEYS
     return ask_gemini_with_keys(
-        messages, GEMINI_ABS_KEYS, "gemini-2.5-pro",
-        thinking=True, use_search=use_search
+        messages, keys, MODEL_ABSOLUTION,
+        thinking_budget=16000,
+        use_search=needs_search(last)
     )
 
-# ── Обратная совместимость ────────────────────────────────────────────────
 
 def ask_gemini(messages):
-    """Алиас — обратная совместимость для старых вызовов."""
+    """Алиас — обратная совместимость для старых вызовов в bot.py."""
     return ask_nova(messages)
 
-# ── Запрос с файлом ───────────────────────────────────────────────────────
+# ── Запрос с файлом ───────────────────────────────────────────────
 
 def ask_with_file(file_bytes, mime_type, file_name, user_prompt, history,
                   use_pro=False, model_tier="core"):
-    if model_tier == "absolution":
-        keys  = GEMINI_ABS_KEYS or GEMINI_PRO_KEYS
-        model = "gemini-2.5-pro"
-        thinking = True
-    elif model_tier == "pro":
-        keys  = GEMINI_PRO_KEYS or GEMINI_NOVA_KEYS
-        model = "gemini-2.5-flash"
-        thinking = True
-    elif model_tier == "nova" or use_pro:
-        keys  = GEMINI_NOVA_KEYS or GEMINI_PRO_KEYS
-        model = "gemini-2.5-flash"
-        thinking = True
-    else:
-        # Core — используем Nova ключи без thinking
-        keys  = GEMINI_NOVA_KEYS or GEMINI_PRO_KEYS or GEMINI_ABS_KEYS
-        model = "gemini-2.5-flash"
-        thinking = False
+    """
+    Отправляет файл + текст в Gemini.
+    model_tier: 'core' | 'nova' | 'pro' | 'absolution'
+    """
+    tier_cfg = {
+        "core":       (GEMINI_NOVA_KEYS or GEMINI_PRO_KEYS, MODEL_CORE,       0),
+        "nova":       (GEMINI_NOVA_KEYS,                      MODEL_NOVA,      1024),
+        "pro":        (GEMINI_PRO_KEYS,                       MODEL_PRO,       8000),
+        "absolution": (GEMINI_ABS_KEYS or GEMINI_PRO_KEYS,    MODEL_ABSOLUTION,16000),
+    }
+    keys, model, thinking_budget = tier_cfg.get(model_tier, tier_cfg["core"])
+
+    # use_pro override (обратная совместимость)
+    if use_pro and model_tier == "core":
+        keys = GEMINI_NOVA_KEYS; model = MODEL_NOVA; thinking_budget = 1024
 
     if not keys:
         raise Exception("NO_KEYS: ключи не настроены")
@@ -293,7 +321,6 @@ def ask_with_file(file_bytes, mime_type, file_name, user_prompt, history,
                     role=role,
                     parts=[genai_types.Part(text=str(msg["content"]))]
                 ))
-
             contents.append(genai_types.Content(
                 role="user",
                 parts=[
@@ -307,57 +334,57 @@ def ask_with_file(file_bytes, mime_type, file_name, user_prompt, history,
             cfg = genai_types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT
             )
-            if thinking:
-                cfg.thinking_config = genai_types.ThinkingConfig(thinking_budget=8000)
+            if thinking_budget > 0:
+                cfg.thinking_config = genai_types.ThinkingConfig(
+                    thinking_budget=thinking_budget
+                )
 
             response = client.models.generate_content(
                 model=model, contents=contents, config=cfg
             )
-
             try:
                 client.files.delete(name=file_obj.name)
             except:
                 pass
-
             return safe_text(response.text)
 
         except Exception as e:
-            error_text = str(e)
-            print(f"ask_with_file error: {error_text[:120]}")
-            if "429" in error_text or "RESOURCE_EXHAUSTED" in error_text:
+            err = str(e)
+            print(f"ask_with_file error: {err[:120]}")
+            if "429" in err or "RESOURCE_EXHAUSTED" in err:
                 continue
-            if "503" in error_text or "UNAVAILABLE" in error_text:
+            if "503" in err or "UNAVAILABLE" in err:
                 continue
             raise
 
     raise Exception("Лимит запросов исчерпан. Попробуй через минуту.")
 
-# ── Проверка статуса ключей ───────────────────────────────────────────────
+# ── Статус ключей ─────────────────────────────────────────────────
 
 def check_keys_status():
-    results = {"core_nova": [], "nova": [], "pro": [], "absolution": []}
+    results = {"core_flash_lite": [], "nova_flash": [], "pro": [], "absolution": []}
 
-    def test_gemini(key):
+    def test(key, model):
         try:
             client = genai.Client(api_key=key)
             client.models.generate_content(
-                model="gemini-2.5-flash",
+                model=model,
                 contents=[genai_types.Content(role="user", parts=[genai_types.Part(text="Hi")])],
                 config=genai_types.GenerateContentConfig()
             )
-            return {"key": key[:8] + "...", "status": "ok"}
+            return {"key": key[:8]+"...", "status": "ok"}
         except Exception as e:
             err = str(e)
             if "429" in err or "RESOURCE_EXHAUSTED" in err:
-                return {"key": key[:8] + "...", "status": "exhausted"}
+                return {"key": key[:8]+"...", "status": "exhausted"}
             elif "401" in err or "API_KEY_INVALID" in err:
-                return {"key": key[:8] + "...", "status": "invalid"}
+                return {"key": key[:8]+"...", "status": "invalid"}
             elif "503" in err:
-                return {"key": key[:8] + "...", "status": "unavailable"}
-            return {"key": key[:8] + "...", "status": f"error: {err[:40]}"}
+                return {"key": key[:8]+"...", "status": "unavailable"}
+            return {"key": key[:8]+"...", "status": f"error: {err[:40]}"}
 
-    for k in GEMINI_NOVA_KEYS: results["core_nova"].append(test_gemini(k))
-    for k in GEMINI_NOVA_KEYS: results["nova"].append(test_gemini(k))
-    for k in GEMINI_PRO_KEYS:  results["pro"].append(test_gemini(k))
-    for k in GEMINI_ABS_KEYS:  results["absolution"].append(test_gemini(k))
+    for k in GEMINI_NOVA_KEYS: results["core_flash_lite"].append(test(k, MODEL_CORE))
+    for k in GEMINI_NOVA_KEYS: results["nova_flash"].append(test(k, MODEL_NOVA))
+    for k in GEMINI_PRO_KEYS:  results["pro"].append(test(k, MODEL_PRO))
+    for k in (GEMINI_ABS_KEYS or GEMINI_PRO_KEYS): results["absolution"].append(test(k, MODEL_ABSOLUTION))
     return results
