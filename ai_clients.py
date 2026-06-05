@@ -8,44 +8,31 @@ from google.genai import types as genai_types
 
 # ── Ключи ─────────────────────────────────────────────────────────────────
 
-# Elyon Core (бесплатная) — DeepSeek, 2 ключа
-DEEPSEEK_KEYS = [
-    os.environ.get("DEEPSEEK_KEY_1", ""),
-    os.environ.get("DEEPSEEK_KEY_2", ""),
-]
-DEEPSEEK_KEYS = [k for k in DEEPSEEK_KEYS if k]
-
-# Elyon Nova — Gemini Flash с thinking, 2 ключа
+# Elyon Core — Gemini Flash (DeepSeek убран)
 GEMINI_NOVA_KEYS = [
     os.environ.get("GEMINI_NOVA_KEY_1", ""),
     os.environ.get("GEMINI_NOVA_KEY_2", ""),
 ]
 GEMINI_NOVA_KEYS = [k for k in GEMINI_NOVA_KEYS if k]
 
-# Elyon PRO — Gemini Flash с расширенным thinking, 2 ключа
+# Elyon PRO — Gemini Flash с расширенным thinking
 GEMINI_PRO_KEYS = [
     os.environ.get("GEMINI_PRO_KEY_1", ""),
     os.environ.get("GEMINI_PRO_KEY_2", ""),
 ]
 GEMINI_PRO_KEYS = [k for k in GEMINI_PRO_KEYS if k]
 
-# Elyon Absolution — Gemini Pro, 2 ключа
+# Elyon Absolution — Gemini Pro
 GEMINI_ABS_KEYS = [
     os.environ.get("GEMINI_ABS_KEY_1", ""),
     os.environ.get("GEMINI_ABS_KEY_2", ""),
 ]
 GEMINI_ABS_KEYS = [k for k in GEMINI_ABS_KEYS if k]
 
-# Обратная совместимость для Telegram бота
-# Если отдельные ключи не заданы — используем старые переменные
-if not DEEPSEEK_KEYS:
-    # Fallback на Gemini для Core если DeepSeek не настроен
-    _fb_free = [os.environ.get(f"GEMINI_FREE_KEY_{i}", "") for i in range(1, 4)]
-    DEEPSEEK_KEYS = [k for k in _fb_free if k]
-
+# Fallbacks: если отдельные ключи не заданы — используем старые переменные
 if not GEMINI_NOVA_KEYS:
-    _fb_pro = [os.environ.get(f"GEMINI_PRO_KEY_{i}", "") for i in range(1, 4)]
-    GEMINI_NOVA_KEYS = [k for k in _fb_pro if k]
+    _fb = [os.environ.get(f"GEMINI_PRO_KEY_{i}", "") for i in range(1, 4)]
+    GEMINI_NOVA_KEYS = [k for k in _fb if k]
 
 if not GEMINI_PRO_KEYS and GEMINI_NOVA_KEYS:
     GEMINI_PRO_KEYS = GEMINI_NOVA_KEYS
@@ -53,15 +40,15 @@ if not GEMINI_PRO_KEYS and GEMINI_NOVA_KEYS:
 if not GEMINI_ABS_KEYS and GEMINI_PRO_KEYS:
     GEMINI_ABS_KEYS = GEMINI_PRO_KEYS
 
-# Для обратной совместимости в bot.py
-GEMINI_FREE_KEYS = DEEPSEEK_KEYS
+# Обратная совместимость для bot.py
+GEMINI_FREE_KEYS = GEMINI_NOVA_KEYS
 
 # ── Системный промпт ───────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = (
     "You are Elyon AI — a smart and helpful assistant. "
     "Your name is Elyon. Never mention that you are Gemini, Google, ChatGPT, GPT, "
-    "OpenAI, Grok, xAI, or any other AI system. "
+    "OpenAI, Grok, xAI, DeepSeek, or any other AI system. "
     "If asked who you are or what your name is, always say you are Elyon AI, "
     "created by the Elyon team. Be friendly, concise, and helpful. "
     "When you use web search results, present the information naturally without "
@@ -73,18 +60,18 @@ SYSTEM_PROMPT = (
     "Use plain dashes or numbers for lists."
 )
 
-# ── Замена упоминаний реальных AI в ответах ───────────────────────────────
+# ── Замена упоминаний реальных AI ─────────────────────────────────────────
 
 REPLACE_PAIRS = [
-    (r'\bGemini\b', 'Gemimi'),
-    (r'\bGoogle DeepMind\b', 'Google DeepMind'),
-    (r'\bGoogle\b', 'Google'),
-    (r'\bChatGPT\b', 'ChatGPT'),
-    (r'\bGPT-[^\s]*', 'GPT'),
-    (r'\bGPT\b', 'GPT'),
-    (r'\bOpenAI\b', 'OpenAI'),
-    (r'\bGrok\b', 'Grok'),
-    (r'\bxAI\b', 'xAI'),
+    (r'\bGemini\b',        'Elyon'),
+    (r'\bGoogle DeepMind\b','the Elyon team'),
+    (r'\bDeepSeek\b',      'Elyon'),
+    (r'\bChatGPT\b',       'ChatGPT'),
+    (r'\bGPT-[^\s]*',      'GPT'),
+    (r'\bGPT\b',           'GPT'),
+    (r'\bOpenAI\b',        'OpenAI'),
+    (r'\bGrok\b',          'Grok'),
+    (r'\bxAI\b',           'xAI'),
 ]
 
 def mask_identity(text):
@@ -94,15 +81,8 @@ def mask_identity(text):
 
 
 def clean_text(text):
-    """
-    Очищает текст от лишних markdown-символов.
-    Сохраняет читаемость: убирает *, `, _, #, но оставляет структуру текста.
-    Код внутри блоков ``` оборачиваем чисто без фенсов.
-    """
     if not text:
         return text
-
-    # Извлекаем и обрабатываем блоки кода отдельно — они нужны как есть
     code_blocks = {}
     placeholder_idx = [0]
 
@@ -114,43 +94,27 @@ def clean_text(text):
         code_blocks[key] = (lang, code)
         return key
 
-    # Сохраняем блоки ```lang\ncode```
     text = re.sub(r'```(\w*)\n?([\s\S]*?)```', save_code_block, text)
-
-    # Убираем inline код `...` — оставляем содержимое без бэктиков
     text = re.sub(r'`([^`\n]+)`', r'\1', text)
-
-    # Убираем bold/italic: ***text***, **text**, *text*, ___text___, __text__, _text_
     text = re.sub(r'\*{3}(.+?)\*{3}', r'\1', text, flags=re.DOTALL)
     text = re.sub(r'\*{2}(.+?)\*{2}', r'\1', text, flags=re.DOTALL)
     text = re.sub(r'\*(.+?)\*',       r'\1', text, flags=re.DOTALL)
     text = re.sub(r'_{3}(.+?)_{3}',   r'\1', text, flags=re.DOTALL)
     text = re.sub(r'_{2}(.+?)_{2}',   r'\1', text, flags=re.DOTALL)
     text = re.sub(r'_(.+?)_',         r'\1', text, flags=re.DOTALL)
-
-    # Убираем заголовки ## Заголовок → Заголовок
     text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
-
-    # Убираем маркеры списков - * • в начале строки, оставляем дефис
     text = re.sub(r'^\*\s+', '- ', text, flags=re.MULTILINE)
     text = re.sub(r'^•\s+',  '- ', text, flags=re.MULTILINE)
-
-    # Убираем горизонтальные линии ---
     text = re.sub(r'^-{3,}\s*$', '', text, flags=re.MULTILINE)
     text = re.sub(r'^\*{3,}\s*$', '', text, flags=re.MULTILINE)
-
-    # Убираем > цитаты
     text = re.sub(r'^>\s+', '', text, flags=re.MULTILINE)
 
-    # Восстанавливаем блоки кода без фенсов — просто сам код с отступом
     for key, (lang, code) in code_blocks.items():
         label = f"[{lang.upper()}]" if lang else "[КОД]"
         restored = f"{label}\n{code.strip()}"
         text = text.replace(key, restored)
 
-    # Убираем множественные пустые строки (больше 2)
     text = re.sub(r'\n{3,}', '\n\n', text)
-
     return text.strip()
 
 
@@ -192,63 +156,6 @@ def needs_search(text):
         if re.search(pattern, text_lower, re.IGNORECASE):
             return True
     return False
-
-# ── Общая функция запроса к DeepSeek ─────────────────────────────
-
-def ask_deepseek_with_keys(messages, keys):
-    """Запрос к DeepSeek через OpenAI-совместимый API."""
-    if not keys:
-        # Fallback на Gemini если DeepSeek ключи не настроены
-        return ask_gemini_with_keys(
-            messages, GEMINI_NOVA_KEYS or GEMINI_PRO_KEYS,
-            "gemini-2.5-flash", thinking=False
-        )
-
-    import urllib.request
-    import json as _json
-
-    shuffled = keys.copy()
-    random.shuffle(shuffled)
-
-    # Конвертируем историю в формат OpenAI
-    openai_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    for msg in messages:
-        role = "assistant" if msg["role"] == "assistant" else "user"
-        openai_messages.append({"role": role, "content": str(msg["content"])})
-
-    for key in shuffled:
-        try:
-            payload = _json.dumps({
-                "model":       "deepseek-chat",
-                "messages":    openai_messages,
-                "temperature": 0.7,
-                "max_tokens":  2048,
-            }).encode("utf-8")
-
-            req = urllib.request.Request(
-                "https://api.deepseek.com/v1/chat/completions",
-                data=payload,
-                headers={
-                    "Content-Type":  "application/json",
-                    "Authorization": f"Bearer {key}",
-                },
-                method="POST"
-            )
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data = _json.loads(resp.read().decode("utf-8"))
-                text = data["choices"][0]["message"]["content"]
-                return safe_text(text)
-
-        except Exception as e:
-            err = str(e)
-            print(f"DeepSeek key error: {err[:120]}")
-            if "429" in err or "quota" in err.lower():
-                continue
-            if "503" in err or "502" in err:
-                continue
-            raise
-
-    raise Exception("DeepSeek лимит исчерпан. Попробуй через минуту.")
 
 # ── Общая функция запроса к Gemini ────────────────────────────────────────
 
@@ -292,13 +199,12 @@ def ask_gemini_with_keys(messages, keys, model, thinking=False, use_search=False
 
     raise Exception("Лимит запросов исчерпан. Попробуй через минуту.")
 
-# ── Elyon Core — DeepSeek ─────────────────────────────────────────
+# ── Elyon Core — Gemini Flash без thinking (бесплатно) ────────────────────
 
 def ask_gpt(messages):
-    """Elyon Core — Gemini Flash без thinking (бесплатно, надёжно)."""
+    """Elyon Core — Gemini Flash без thinking."""
     last_msg   = messages[-1]["content"] if messages else ""
     use_search = needs_search(last_msg)
-    # Используем Nova ключи для Core — те же ключи, без thinking
     keys = GEMINI_NOVA_KEYS or GEMINI_PRO_KEYS or GEMINI_ABS_KEYS
     if not keys:
         raise Exception("NO_KEYS: настрой GEMINI_NOVA_KEY_1 в переменных окружения")
@@ -307,7 +213,7 @@ def ask_gpt(messages):
         thinking=False, use_search=use_search
     )
 
-# ── Elyon Nova ────────────────────────────────────────────────────
+# ── Elyon Nova ────────────────────────────────────────────────────────────
 
 def ask_nova(messages):
     last_msg = messages[-1]["content"] if messages else ""
@@ -317,7 +223,7 @@ def ask_nova(messages):
         thinking=True, use_search=use_search
     )
 
-# ── Elyon PRO ─────────────────────────────────────────────────────
+# ── Elyon PRO ─────────────────────────────────────────────────────────────
 
 def ask_pro(messages):
     last_msg = messages[-1]["content"] if messages else ""
@@ -327,7 +233,7 @@ def ask_pro(messages):
         thinking=True, use_search=use_search
     )
 
-# ── Elyon Absolution ──────────────────────────────────────────────
+# ── Elyon Absolution ──────────────────────────────────────────────────────
 
 def ask_absolution(messages):
     last_msg = messages[-1]["content"] if messages else ""
@@ -337,7 +243,7 @@ def ask_absolution(messages):
         thinking=True, use_search=use_search
     )
 
-# ── Обратная совместимость ────────────────────────────────────────
+# ── Обратная совместимость ────────────────────────────────────────────────
 
 def ask_gemini(messages):
     """Алиас — обратная совместимость для старых вызовов."""
@@ -347,12 +253,6 @@ def ask_gemini(messages):
 
 def ask_with_file(file_bytes, mime_type, file_name, user_prompt, history,
                   use_pro=False, model_tier="core"):
-    """
-    Отправляет файл + текст в Gemini для анализа.
-    DeepSeek не поддерживает файлы — для Core используем Nova ключи.
-    model_tier: 'core' | 'nova' | 'pro' | 'absolution'
-    """
-    # Выбираем ключи по тиру
     if model_tier == "absolution":
         keys  = GEMINI_ABS_KEYS or GEMINI_PRO_KEYS
         model = "gemini-2.5-pro"
@@ -366,7 +266,7 @@ def ask_with_file(file_bytes, mime_type, file_name, user_prompt, history,
         model = "gemini-2.5-flash"
         thinking = True
     else:
-        # Core — DeepSeek не умеет файлы, используем Nova ключи
+        # Core — используем Nova ключи без thinking
         keys  = GEMINI_NOVA_KEYS or GEMINI_PRO_KEYS or GEMINI_ABS_KEYS
         model = "gemini-2.5-flash"
         thinking = False
@@ -398,8 +298,7 @@ def ask_with_file(file_bytes, mime_type, file_name, user_prompt, history,
                 role="user",
                 parts=[
                     genai_types.Part(file_data=genai_types.FileData(
-                        file_uri=file_obj.uri,
-                        mime_type=mime_type
+                        file_uri=file_obj.uri, mime_type=mime_type
                     )),
                     genai_types.Part(text=user_prompt)
                 ]
@@ -412,9 +311,7 @@ def ask_with_file(file_bytes, mime_type, file_name, user_prompt, history,
                 cfg.thinking_config = genai_types.ThinkingConfig(thinking_budget=8000)
 
             response = client.models.generate_content(
-                model=model,
-                contents=contents,
-                config=cfg
+                model=model, contents=contents, config=cfg
             )
 
             try:
@@ -435,12 +332,10 @@ def ask_with_file(file_bytes, mime_type, file_name, user_prompt, history,
 
     raise Exception("Лимит запросов исчерпан. Попробуй через минуту.")
 
-
-# ── Проверка исчерпанности ключей ─────────────────────────────────────────
+# ── Проверка статуса ключей ───────────────────────────────────────────────
 
 def check_keys_status():
-    """Проверяет статус всех ключей."""
-    results = {"core_deepseek": [], "nova": [], "pro": [], "absolution": []}
+    results = {"core_nova": [], "nova": [], "pro": [], "absolution": []}
 
     def test_gemini(key):
         try:
@@ -461,29 +356,7 @@ def check_keys_status():
                 return {"key": key[:8] + "...", "status": "unavailable"}
             return {"key": key[:8] + "...", "status": f"error: {err[:40]}"}
 
-    def test_deepseek(key):
-        import urllib.request, json as _j
-        try:
-            payload = _j.dumps({
-                "model": "deepseek-chat",
-                "messages": [{"role": "user", "content": "Hi"}],
-                "max_tokens": 5
-            }).encode()
-            req = urllib.request.Request(
-                "https://api.deepseek.com/v1/chat/completions",
-                data=payload,
-                headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
-                method="POST"
-            )
-            with urllib.request.urlopen(req, timeout=10):
-                return {"key": key[:8] + "...", "status": "ok"}
-        except Exception as e:
-            err = str(e)
-            if "429" in err: return {"key": key[:8] + "...", "status": "exhausted"}
-            if "401" in err: return {"key": key[:8] + "...", "status": "invalid"}
-            return {"key": key[:8] + "...", "status": f"error: {err[:40]}"}
-
-    for k in DEEPSEEK_KEYS:    results["core_deepseek"].append(test_deepseek(k))
+    for k in GEMINI_NOVA_KEYS: results["core_nova"].append(test_gemini(k))
     for k in GEMINI_NOVA_KEYS: results["nova"].append(test_gemini(k))
     for k in GEMINI_PRO_KEYS:  results["pro"].append(test_gemini(k))
     for k in GEMINI_ABS_KEYS:  results["absolution"].append(test_gemini(k))
