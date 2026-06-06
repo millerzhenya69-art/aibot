@@ -1881,8 +1881,6 @@ _DP_TIER_MAP = {
 
 @app.route("/api/donatepay_webhook", methods=["POST", "OPTIONS"])
 def donatepay_webhook():
-@app.route("/api/donatepay_webhook", methods=["POST", "OPTIONS"])
-def donatepay_webhook():
     if request.method == "OPTIONS":
         return "", 204
     try:
