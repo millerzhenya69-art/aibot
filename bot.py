@@ -1860,11 +1860,13 @@ def auth_telegram_token():
     except Exception as e:
         print("auth_telegram_token error:", e)
         return jsonify({"ok": False, "error": str(e)}), 500
-      # ══════════════════════════════════════════════════════════════════
+
+
+# ════════════════════════════════════════════════════════════════════
 # DonatePay Webhook
 # URL: https://elyon-bot.onrender.com/api/donatepay_webhook  
 # Render env: DONATEPAY_SECRET = <секрет из DonatePay>
-# ══════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════
 import hmac as _hmac
 import hashlib as _hashlib
 
@@ -1876,6 +1878,9 @@ _DP_TIER_MAP = {
     "265": "absolution", "265.00": "absolution",
 }
 
+
+@app.route("/api/donatepay_webhook", methods=["POST", "OPTIONS"])
+def donatepay_webhook():
 @app.route("/api/donatepay_webhook", methods=["POST", "OPTIONS"])
 def donatepay_webhook():
     if request.method == "OPTIONS":
