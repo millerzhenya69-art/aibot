@@ -33,7 +33,6 @@ OWNER_ID     = int(os.environ.get("OWNER_ID", "7113603197"))
 CRYPTO_TOKEN = os.environ.get("CRYPTO_TOKEN", "")
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "Elyon_by_unkony_bot")
 
-
 import database
 database.OWNER_ID = OWNER_ID
 
@@ -43,22 +42,37 @@ init_db()
 user_states = {}
 
 # ── Тест-режим для owner ──────────────────────────────────────────────────
-# Когда включён — owner проходит все проверки как обычный пользователь
 owner_test_mode = False
 
 def is_privileged(user_id):
-    """Owner без тест-режима — обходит все проверки."""
     return user_id == OWNER_ID and not owner_test_mode
 
-# ── Обязательные каналы для подписки ─────────────────────────────────────
+# ── Вспомогательная функция — удалить сообщение через N секунд ───────────
+def delete_later(chat_id, message_id, delay=10):
+    """Удаляет сообщение бота через delay секунд (по умолчанию 10)."""
+    def _do_delete():
+        import time
+        time.sleep(delay)
+        try:
+            bot.delete_message(chat_id, message_id)
+        except Exception:
+            pass
+    t = threading.Thread(target=_do_delete, daemon=True)
+    t.start()
 
+def send_temp(chat_id, text, delay=12, **kwargs):
+    """Отправляет сообщение и удаляет его через delay секунд."""
+    msg = bot.send_message(chat_id, text, **kwargs)
+    delete_later(chat_id, msg.message_id, delay)
+    return msg
+
+# ── Обязательные каналы для подписки ─────────────────────────────────────
 REQUIRED_CHANNELS = [
-    {"id": "@unkonyy",   "title": "Owner channel",    "url": "https://t.me/unkonyy"},
-    {"id": "@AI_Elyon",  "title": "Elyon AI channel", "url": "https://t.me/AI_Elyon"},
+    {"id": "@unkonyy",  "title": "Owner channel",    "url": "https://t.me/unkonyy"},
+    {"id": "@AI_Elyon", "title": "Elyon AI channel", "url": "https://t.me/AI_Elyon"},
 ]
 
 def check_subscriptions(user_id):
-    """Проверяет подписку на все обязательные каналы. Возвращает список каналов где НЕ подписан."""
     not_subscribed = []
     for ch in REQUIRED_CHANNELS:
         try:
@@ -66,20 +80,14 @@ def check_subscriptions(user_id):
             if member.status in ("left", "kicked", "banned"):
                 not_subscribed.append(ch)
         except Exception as e:
-            # Если бот не является членом канала — пропускаем проверку
             print(f"Sub check error for {ch['id']}: {e}")
     return not_subscribed
 
 def send_subscribe_prompt(chat_id):
-    """Отправляет сообщение с кнопками подписки."""
     markup = types.InlineKeyboardMarkup(row_width=1)
     for ch in REQUIRED_CHANNELS:
-        markup.add(types.InlineKeyboardButton(
-            f"📢 {ch['title']}", url=ch["url"]
-        ))
-    markup.add(types.InlineKeyboardButton(
-        "✅ Я подписался — проверить", callback_data="check_subs"
-    ))
+        markup.add(types.InlineKeyboardButton(f"📢 {ch['title']}", url=ch["url"]))
+    markup.add(types.InlineKeyboardButton("✅ Я подписался — проверить", callback_data="check_subs"))
     bot.send_message(
         chat_id,
         "👋 Добро пожаловать в Elyon AI!\n\n"
@@ -91,16 +99,13 @@ def send_subscribe_prompt(chat_id):
     )
 
 def is_subscribed(user_id):
-    """True если пользователь подписан на все каналы."""
     return len(check_subscriptions(user_id)) == 0
 
 # ── Цены ──────────────────────────────────────────────────────────────────
-
 PRICES = {
     "nova":       {"stars": 50,  "label": "Elyon Nova — 50 ⭐",       "days": 30, "rub": 91},
     "pro":        {"stars": 100, "label": "Elyon PRO — 100 ⭐",        "days": 30, "rub": 182},
     "absolution": {"stars": 150, "label": "Elyon Absolution — 150 ⭐", "days": 30, "rub": 265},
-    # Обратная совместимость
     "month":    {"stars": 50,  "label": "Elyon Nova — 50 ⭐",       "days": 30,  "rub": 91},
     "halfyear": {"stars": 100, "label": "Elyon PRO — 100 ⭐",        "days": 180, "rub": 182},
     "forever":  {"stars": 150, "label": "Elyon Absolution — 150 ⭐", "days": 0,   "rub": 265},
@@ -121,13 +126,11 @@ VIRTUAL_PRICES = {
     "halfyear": {"rub": 182, "label": "Elyon PRO — 182 монеты"},
     "forever":  {"rub": 265, "label": "Elyon Absolution — 265 монет"},
 }
-STARS_PER_RUB = 1 / 1.82
-RUB_PER_DAY   = 50 / 30
-
+STARS_PER_RUB  = 1 / 1.82
+RUB_PER_DAY    = 50 / 30
 BETA_TESTER_STARS = 50
 
 # ── Поддерживаемые типы файлов ────────────────────────────────────────────
-
 GEMINI_SUPPORTED = {
     "image/jpeg", "image/png", "image/gif", "image/webp",
     "video/mp4", "video/mpeg", "video/mov", "video/avi", "video/webm",
@@ -137,7 +140,6 @@ GEMINI_SUPPORTED = {
     "text/x-python", "text/x-c", "text/x-c++", "text/x-java",
     "application/json", "text/csv", "text/xml",
 }
-
 TEXT_EXTENSIONS = {
     ".py": "text/x-python", ".js": "text/javascript", ".ts": "text/javascript",
     ".cpp": "text/x-c++", ".c": "text/x-c", ".h": "text/x-c",
@@ -154,9 +156,7 @@ def get_mime_for_extension(filename):
     ext = os.path.splitext(filename.lower())[1]
     return TEXT_EXTENSIONS.get(ext, None)
 
-
 # ── Клавиатуры ────────────────────────────────────────────────────────────
-
 def main_menu_keyboard(user_id=None):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     markup.add(
@@ -168,7 +168,6 @@ def main_menu_keyboard(user_id=None):
     if user_id and user_id == OWNER_ID:
         markup.add(types.KeyboardButton("🛠 Control Panel"))
     return markup
-
 
 def show_start(chat_id, user_id=None):
     markup = types.InlineKeyboardMarkup()
@@ -184,7 +183,6 @@ def show_start(chat_id, user_id=None):
         "Выбери версию:",
         reply_markup=markup
     )
-
 
 def show_payment_options(chat_id, user_id):
     balance = get_balance(user_id)
@@ -216,7 +214,6 @@ def show_payment_options(chat_id, user_id):
         reply_markup=markup
     )
 
-
 def show_virtual_payment(chat_id, user_id):
     balance = get_balance(user_id)
     markup = types.InlineKeyboardMarkup(row_width=1)
@@ -232,13 +229,11 @@ def show_virtual_payment(chat_id, user_id):
         reply_markup=markup
     )
 
-
 def calc_custom_price(days):
     rub   = round(RUB_PER_DAY * days, 2)
     stars = max(1, round(rub * STARS_PER_RUB))
     usdt  = round(rub * 0.011, 2)
     return rub, stars, usdt
-
 
 def activate_subscription(user_id, plan, chat_id, days=None, label=None):
     if plan == "forever":
@@ -265,7 +260,6 @@ def activate_subscription(user_id, plan, chat_id, days=None, label=None):
     except:
         pass
 
-
 def create_crypto_invoice(amount, user_id, plan, label=None):
     try:
         response = requests.post(
@@ -286,25 +280,20 @@ def create_crypto_invoice(amount, user_id, plan, label=None):
         print("CryptoBot error:", e)
     return None
 
-
-# ── Обработка файлов от пользователя ─────────────────────────────────────
-
+# ── Обработка файлов ──────────────────────────────────────────────────────
 def download_telegram_file(file_id):
     file_info = bot.get_file(file_id)
     file_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
     response = requests.get(file_url, timeout=30)
     return response.content
 
-
 def handle_file_message(message, user_id, ai_model):
     user = get_user(user_id)
     if not user:
         return
-
     if is_maintenance() and user_id != OWNER_ID:
-        bot.send_message(message.chat.id, "🔧 Технические работы")
+        send_temp(message.chat.id, "🔧 Технические работы")
         return
-
     if ai_model == "gemini" and not has_active_sub(user_id):
         bot.send_message(message.chat.id, "⚠️ Подписка истекла.")
         show_payment_options(message.chat.id, user_id)
@@ -340,20 +329,20 @@ def handle_file_message(message, user_id, ai_model):
         file_name = "voice.ogg"
 
     if not file_id:
-        bot.send_message(message.chat.id, "❌ Неподдерживаемый тип файла.")
+        send_temp(message.chat.id, "❌ Неподдерживаемый тип файла.")
         return
 
     if mime_type not in GEMINI_SUPPORTED:
         ext = os.path.splitext(file_name.lower())[1]
         if ext in [".zip", ".rar", ".7z", ".tar"]:
-            bot.send_message(message.chat.id,
+            send_temp(message.chat.id,
                 "Архивы (ZIP, RAR) нельзя анализировать напрямую. "
-                "Пожалуйста, распакуй файлы и отправь их по отдельности.")
+                "Пожалуйста, распакуй файлы и отправь их по отдельности.", delay=20)
             return
         if ext in [".docx", ".xlsx", ".xls", ".doc"]:
-            bot.send_message(message.chat.id,
+            send_temp(message.chat.id,
                 "Файлы Word/Excel имеют ограниченную поддержку. "
-                "Для лучших результатов сохрани как PDF или TXT.")
+                "Для лучших результатов сохрани как PDF или TXT.", delay=20)
             mime_type = "application/octet-stream"
 
     bot.send_chat_action(message.chat.id, "typing")
@@ -376,20 +365,24 @@ def handle_file_message(message, user_id, ai_model):
         error_text = str(e)
         print("File AI error:", e)
         if "429" in error_text or "RESOURCE_EXHAUSTED" in error_text:
-            bot.send_message(message.chat.id, "Слишком много запросов. Попробуй через минуту.")
+            send_temp(message.chat.id, "Слишком много запросов. Попробуй через минуту.")
         else:
-            bot.send_message(message.chat.id, f"Ошибка анализа файла: {error_text[:150]}")
+            send_temp(message.chat.id, f"Ошибка анализа файла: {error_text[:150]}", delay=20)
 
 
 # ── /start ────────────────────────────────────────────────────────────────
-
 @bot.message_handler(commands=["start"])
 def start(message):
     user_id = message.from_user.id
     args    = message.text.split()
     param   = args[1] if len(args) > 1 else None
 
-    # Deep link с оплатой с сайта: /start pay_nova, pay_pro, pay_abs
+    # Удаляем команду /start пользователя чтобы не засорять чат
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except:
+        pass
+
     if param and param.startswith("pay_"):
         tier_map = {"pay_nova": "nova", "pay_pro": "pro", "pay_abs": "absolution"}
         tier = tier_map.get(param)
@@ -400,16 +393,12 @@ def start(message):
             _show_all_tiers_payment(message.chat.id, user_id)
         return
 
-    # Deep link авторизации с сайта
     if param == "auth":
         register_user(user_id, message.from_user.username or "")
-        bot.send_message(
-            message.chat.id,
-            "Напиши /auth чтобы получить ссылку для входа на сайт Elyon AI."
-        )
+        send_temp(message.chat.id,
+            "Напиши /auth чтобы получить ссылку для входа на сайт Elyon AI.", delay=30)
         return
 
-    # Обычный /start с рефералом
     referred_by = None
     if param:
         try:
@@ -427,11 +416,8 @@ def start(message):
     show_start(message.chat.id, user_id)
 
 
-# ── /auth — авторизация на сайте ──────────────────────────────────────────
-
+# ── /auth ─────────────────────────────────────────────────────────────────
 import secrets as _secrets
-
-# Хранилище токенов {token: {user_id, username, first_name, expires}}
 _auth_tokens = {}
 
 @bot.message_handler(commands=["auth"])
@@ -440,8 +426,14 @@ def cmd_auth(message):
     username   = message.from_user.username or ""
     first_name = message.from_user.first_name or ""
 
+    # Удаляем команду пользователя
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except:
+        pass
+
     token   = _secrets.token_urlsafe(24)
-    expires = datetime.now().timestamp() + 300  # 5 минут
+    expires = datetime.now().timestamp() + 300
 
     _auth_tokens[token] = {
         "user_id":    user_id,
@@ -450,8 +442,8 @@ def cmd_auth(message):
         "expires":    expires,
     }
 
-    user     = get_user(user_id)
-    sub_type = user[5] if user else "none"
+    user      = get_user(user_id)
+    sub_type  = user[5] if user else "none"
     sub_label = sub_type if sub_type != "none" else "нет подписки"
 
     markup = types.InlineKeyboardMarkup()
@@ -459,61 +451,52 @@ def cmd_auth(message):
         "✅ Войти на сайт Elyon AI",
         url=f"https://elyon-ai-web.vercel.app/auth.html?tg_token={token}"
     ))
-    bot.send_message(
+    # Ссылка действует 5 минут — удаляем сообщение через 310 сек
+    msg = bot.send_message(
         message.chat.id,
         f"🔐 Авторизация на сайте\n\n"
         f"Нажми кнопку — она действует 5 минут.\n\n"
         f"Подписка: {sub_label}",
         reply_markup=markup
     )
+    delete_later(message.chat.id, msg.message_id, delay=310)
 
 
-# ── /give — выдача подписки / роли ────────────────────────────────────────
-
+# ── /give ─────────────────────────────────────────────────────────────────
 @bot.message_handler(commands=["give"])
 def cmd_give(message):
     if message.from_user.id != OWNER_ID:
         return
-
-    # Форматы:
-    #   /give @username nova 30d
-    #   /give @username nova forever
-    #   /give @username role sponsor
-    #   /give @username role sponsor 30d
-    #   /give @username remove sub
-    #   /give @username remove role
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except:
+        pass
 
     parts = message.text.strip().split()
-    # parts[0] = /give, parts[1] = @username, parts[2] = тип, ...
-
     if len(parts) < 3:
-        bot.send_message(message.chat.id,
+        send_temp(message.chat.id,
             "Использование:\n"
             "/give @username nova 30d\n"
             "/give @username nova forever\n"
             "/give @username role sponsor\n"
             "/give @username role sponsor 30d\n"
             "/give @username remove sub\n"
-            "/give @username remove role"
-        )
+            "/give @username remove role", delay=30)
         return
 
     raw_username = parts[1].lstrip("@")
     target = get_user_by_username(raw_username)
-
     if not target:
-        bot.send_message(message.chat.id,
+        send_temp(message.chat.id,
             f"Пользователь @{raw_username} не найден в базе.\n"
-            "Он должен хотя бы раз написать боту.")
+            "Он должен хотя бы раз написать боту.", delay=20)
         return
 
     target_id = target[0]
     action    = parts[2].lower()
 
-    # ── Выдача подписки ──
     if action == "nova":
         duration = parts[3].lower() if len(parts) > 3 else "30d"
-
         if duration == "forever":
             set_subscription(target_id, "forever", "none")
             set_ai_model(target_id, "gemini")
@@ -523,7 +506,7 @@ def cmd_give(message):
             try:
                 days = int(duration.replace("d", "").replace("д", ""))
             except:
-                bot.send_message(message.chat.id, "Неверный формат срока. Пример: 30d или forever")
+                send_temp(message.chat.id, "Неверный формат срока. Пример: 30d или forever", delay=15)
                 return
             until = datetime.now() + timedelta(days=days)
             until_str = until.strftime("%d.%m.%Y %H:%M")
@@ -533,8 +516,8 @@ def cmd_give(message):
             expires_str = until_str
 
         log_admin_grant(target_id, "subscription", "nova", expires_str, OWNER_ID)
-        bot.send_message(message.chat.id,
-            f"Подписка Elyon Nova выдана @{raw_username} на {label}.")
+        send_temp(message.chat.id,
+            f"Подписка Elyon Nova выдана @{raw_username} на {label}.", delay=20)
         try:
             bot.send_message(target_id,
                 f"Тебе выдана подписка Elyon Nova на {label}!\n"
@@ -543,15 +526,13 @@ def cmd_give(message):
             pass
         return
 
-    # ── Выдача роли ──
     if action == "role":
         if len(parts) < 4:
-            bot.send_message(message.chat.id, "Укажи роль. Пример: /give @user role sponsor")
+            send_temp(message.chat.id, "Укажи роль. Пример: /give @user role sponsor", delay=15)
             return
         role_name    = parts[3]
         duration_str = parts[4].lower() if len(parts) > 4 else None
         expires_str  = "none"
-
         if duration_str and duration_str != "forever":
             try:
                 days = int(duration_str.replace("d", "").replace("д", ""))
@@ -559,86 +540,109 @@ def cmd_give(message):
                 expires_str = until.strftime("%d.%m.%Y %H:%M")
             except:
                 pass
-
         set_role(target_id, role_name)
         log_admin_grant(target_id, "role", role_name, expires_str, OWNER_ID)
         exp_label = f"до {expires_str}" if expires_str != "none" else "бессрочно"
-        bot.send_message(message.chat.id,
-            f"Роль '{role_name}' выдана @{raw_username} ({exp_label}).")
+        send_temp(message.chat.id,
+            f"Роль '{role_name}' выдана @{raw_username} ({exp_label}).", delay=20)
         try:
-            bot.send_message(target_id,
-                f"Тебе присвоена роль: {role_name}!")
+            bot.send_message(target_id, f"Тебе присвоена роль: {role_name}!")
         except:
             pass
         return
 
-    # ── Снять подписку / роль ──
     if action == "remove":
         what = parts[3].lower() if len(parts) > 3 else ""
         if what == "sub":
             remove_subscription(target_id)
-            bot.send_message(message.chat.id, f"Подписка @{raw_username} удалена.")
+            send_temp(message.chat.id, f"Подписка @{raw_username} удалена.", delay=15)
             try:
                 bot.send_message(target_id, "Твоя подписка Elyon Nova была деактивирована.")
             except:
                 pass
         elif what == "role":
             set_role(target_id, "default user")
-            bot.send_message(message.chat.id, f"Роль @{raw_username} сброшена до 'default user'.")
+            send_temp(message.chat.id, f"Роль @{raw_username} сброшена до 'default user'.", delay=15)
             try:
                 bot.send_message(target_id, "Твоя роль была сброшена.")
             except:
                 pass
         else:
-            bot.send_message(message.chat.id, "Укажи что снять: sub или role")
+            send_temp(message.chat.id, "Укажи что снять: sub или role", delay=15)
         return
 
-    bot.send_message(message.chat.id,
-        "Неизвестное действие. Используй: nova / role / remove")
+    send_temp(message.chat.id, "Неизвестное действие. Используй: nova / role / remove", delay=15)
 
 
-# ── /pay — быстрая оплата подписки (вызывается с сайта) ───────────────────
-
+# ── /pay — объединённый обработчик (для пользователей + owner) ───────────
 @bot.message_handler(commands=["pay"])
-def cmd_pay_subscription(message):
+def cmd_pay(message):
     """
-    /pay        — показывает все тарифы
-    /pay nova   — сразу показывает оплату Nova
-    /pay pro    — сразу показывает оплату PRO
-    /pay abs    — сразу показывает оплату Absolution
+    Для owner: /pay @username 100  — выдать монеты
+    Для всех:  /pay               — показать все тарифы
+               /pay nova|pro|abs  — показать конкретный тариф
     """
-    parts = message.text.strip().split()
-    tier  = parts[1].lower() if len(parts) > 1 else None
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except:
+        pass
 
-    # Если команда от owner для выдачи монет — обрабатываем отдельно
-    if message.from_user.id == OWNER_ID and tier and tier.startswith("@"):
-        # Это старая команда /pay @username сумма — пропускаем в cmd_pay_coins
+    parts = message.text.strip().split()
+    user_id = message.from_user.id
+
+    # Owner: /pay @username 100
+    if user_id == OWNER_ID and len(parts) >= 3 and parts[1].startswith("@"):
+        raw_username = parts[1].lstrip("@")
+        try:
+            amount = int(parts[2])
+            if amount <= 0:
+                raise ValueError
+        except ValueError:
+            send_temp(message.chat.id, "Укажи корректную сумму монет (целое положительное число).", delay=15)
+            return
+        target = get_user_by_username(raw_username)
+        if not target:
+            send_temp(message.chat.id, f"Пользователь @{raw_username} не найден в базе.", delay=15)
+            return
+        target_id = target[0]
+        add_balance(target_id, amount)
+        new_balance = get_balance(target_id)
+        send_temp(message.chat.id,
+            f"Начислено {amount} монет пользователю @{raw_username}.\n"
+            f"Новый баланс: {new_balance} монет.", delay=20)
+        try:
+            bot.send_message(target_id,
+                f"Тебе начислено {amount} монет от администратора!\n"
+                f"Твой баланс: {new_balance} монет.\n"
+                "Монетами можно оплатить подписку в разделе оплаты.")
+        except:
+            pass
         return
 
+    # Обычный пользователь: показ тарифов
     tier_map = {
         "nova": "nova", "n": "nova",
         "pro": "pro", "p": "pro",
         "abs": "absolution", "absolution": "absolution", "a": "absolution",
     }
+    tier = parts[1].lower() if len(parts) > 1 else None
     target_tier = tier_map.get(tier) if tier else None
 
     if target_tier:
-        _show_single_tier_payment(message.chat.id, message.from_user.id, target_tier)
+        _show_single_tier_payment(message.chat.id, user_id, target_tier)
     else:
-        _show_all_tiers_payment(message.chat.id, message.from_user.id)
+        _show_all_tiers_payment(message.chat.id, user_id)
 
 
 def _show_single_tier_payment(chat_id, user_id, tier):
-    """Показывает оплату для конкретного тарифа."""
     tier_info = {
-        "nova":       {"label": "Elyon Nova",       "stars": 50,  "rub": 91,  "desc": "25 сообщений/день"},
-        "pro":        {"label": "Elyon PRO",         "stars": 100, "rub": 182, "desc": "40 сообщений/день"},
-        "absolution": {"label": "Elyon Absolution",  "stars": 150, "rub": 265, "desc": "50 сообщений/день"},
+        "nova":       {"label": "Elyon Nova",       "stars": 50,  "rub": 91,  "desc": "30 сообщений/день"},
+        "pro":        {"label": "Elyon PRO",         "stars": 100, "rub": 182, "desc": "30 сообщений/день"},
+        "absolution": {"label": "Elyon Absolution",  "stars": 150, "rub": 265, "desc": "30 сообщений/день"},
     }
     info = tier_info.get(tier)
     if not info:
         return
-
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(
         types.InlineKeyboardButton(
@@ -658,9 +662,7 @@ def _show_single_tier_payment(chat_id, user_id, tier):
         reply_markup=markup
     )
 
-
 def _show_all_tiers_payment(chat_id, user_id):
-    """Показывает все тарифы."""
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
         types.InlineKeyboardButton("⭐ Nova — 50 звёзд",        callback_data="pay_stars_nova"),
@@ -673,67 +675,24 @@ def _show_all_tiers_payment(chat_id, user_id):
     bot.send_message(
         chat_id,
         "⭐ Elyon AI — Подписка\n\n"
-        "Nova — 25 сообщений/день\n"
-        "PRO — 40 сообщений/день\n"
-        "Absolution — 50 сообщений/день\n\n"
+        "Nova — 30 сообщений/день\n"
+        "PRO — 30 сообщений/день\n"
+        "Absolution — 30 сообщений/день\n\n"
         "Выбери тариф и способ оплаты:",
         reply_markup=markup
     )
 
 
-# ── /pay @username сумма — выдача монет (owner) ───────────────────────────
-
-
-
-@bot.message_handler(commands=["pay"])
-def cmd_pay(message):
-    if message.from_user.id != OWNER_ID:
-        return
-
-    # /pay @username 100
-    parts = message.text.strip().split()
-    if len(parts) < 3:
-        bot.send_message(message.chat.id, "Использование: /pay @username сумма")
-        return
-
-    raw_username = parts[1].lstrip("@")
-    try:
-        amount = int(parts[2])
-        if amount <= 0:
-            raise ValueError
-    except ValueError:
-        bot.send_message(message.chat.id, "Укажи корректную сумму монет (целое положительное число).")
-        return
-
-    target = get_user_by_username(raw_username)
-    if not target:
-        bot.send_message(message.chat.id,
-            f"Пользователь @{raw_username} не найден в базе.")
-        return
-
-    target_id = target[0]
-    add_balance(target_id, amount)
-    new_balance = get_balance(target_id)
-
-    bot.send_message(message.chat.id,
-        f"Начислено {amount} монет пользователю @{raw_username}.\n"
-        f"Новый баланс: {new_balance} монет.")
-    try:
-        bot.send_message(target_id,
-            f"Тебе начислено {amount} монет от администратора!\n"
-            f"Твой баланс: {new_balance} монет.\n"
-            "Монетами можно оплатить подписку в разделе оплаты.")
-    except:
-        pass
-
-
-# ── /testmode — переключение тест-режима для owner ────────────────────────
-
+# ── /testmode ─────────────────────────────────────────────────────────────
 @bot.message_handler(commands=["testmode"])
 def cmd_testmode(message):
     global owner_test_mode
     if message.from_user.id != OWNER_ID:
         return
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except:
+        pass
     owner_test_mode = not owner_test_mode
     status = "ВКЛ 🧪" if owner_test_mode else "ВЫКЛ 👑"
     bot.send_message(
@@ -747,16 +706,18 @@ def cmd_testmode(message):
     )
 
 
-
+# ── Control Panel ─────────────────────────────────────────────────────────
 @bot.message_handler(func=lambda m: m.text == "🛠 Control Panel" and m.from_user.id == OWNER_ID)
 def control_panel(message):
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except:
+        pass
     send_control_panel(message.chat.id)
-
 
 def send_control_panel(chat_id):
     maintenance = is_maintenance()
     stats = get_stats()
-
     roles_text = ""
     for r, cnt in stats.get("roles", {}).items():
         roles_text += f"  {r}: {cnt}\n"
@@ -772,7 +733,6 @@ def send_control_panel(chat_id):
             callback_data="admin_toggle_maintenance"
         )
     )
-
     bot.send_message(
         chat_id,
         f"🛠 Панель управления\n\n"
@@ -792,7 +752,6 @@ def send_control_panel(chat_id):
 
 
 # ── Обработчики файлов ────────────────────────────────────────────────────
-
 @bot.message_handler(content_types=["photo", "video", "audio", "voice"])
 def handle_media(message):
     ensure_registered(message)
@@ -802,7 +761,6 @@ def handle_media(message):
         show_start(message.chat.id, user_id)
         return
     handle_file_message(message, user_id, user[4])
-
 
 @bot.message_handler(content_types=["document"])
 def handle_document(message):
@@ -814,18 +772,14 @@ def handle_document(message):
         return
     handle_file_message(message, user_id, user[4])
 
-
-# ── Обработка подарков (тест) ─────────────────────────────────────────────
-
 @bot.message_handler(content_types=["gift"])
 def handle_gift(message):
-    """Принимаем подарок как оплату подписки (тестовая функция)."""
     ensure_registered(message)
     user_id = message.from_user.id
-    bot.send_message(
+    send_temp(
         message.chat.id,
         "Подарок получен! Администратор рассмотрит твой платёж и вручную активирует подписку.\n"
-        "Обратись в поддержку если подписка не появилась в течение 24 часов."
+        "Обратись в поддержку если подписка не появилась в течение 24 часов.", delay=60
     )
     try:
         bot.send_message(
@@ -837,8 +791,7 @@ def handle_gift(message):
         pass
 
 
-# ── Inline кнопки ─────────────────────────────────────────────────────────
-
+# ── Callback кнопки ───────────────────────────────────────────────────────
 @bot.callback_query_handler(func=lambda c: True)
 def handle_callback(call):
     user_id = call.from_user.id
@@ -848,19 +801,14 @@ def handle_callback(call):
     except:
         pass
 
-    # ── Проверка подписки на каналы ──
+    # Проверка подписки на каналы
     if call.data == "check_subs":
         not_subbed = check_subscriptions(user_id)
         if not_subbed:
-            # Ещё не подписан — показываем какие каналы остались
             markup = types.InlineKeyboardMarkup(row_width=1)
             for ch in not_subbed:
-                markup.add(types.InlineKeyboardButton(
-                    f"📢 {ch['title']}", url=ch["url"]
-                ))
-            markup.add(types.InlineKeyboardButton(
-                "✅ Проверить снова", callback_data="check_subs"
-            ))
+                markup.add(types.InlineKeyboardButton(f"📢 {ch['title']}", url=ch["url"]))
+            markup.add(types.InlineKeyboardButton("✅ Проверить снова", callback_data="check_subs"))
             bot.send_message(
                 chat_id,
                 "❌ Ты ещё не подписан на все каналы.\n\n"
@@ -869,7 +817,6 @@ def handle_callback(call):
                 reply_markup=markup
             )
         else:
-            # Подписан — регистрируем и запускаем бота
             referred_by = None
             if user_id in user_states and "pending_ref" in user_states[user_id]:
                 try:
@@ -883,15 +830,12 @@ def handle_callback(call):
                     bot.send_message(referred_by, "Кто-то перешёл по твоей реферальной ссылке! +10 монет зачислено.")
                 except:
                     pass
-            bot.send_message(
-                chat_id,
-                "✅ Отлично! Подписка подтверждена.",
-                reply_markup=main_menu_keyboard(user_id)
-            )
+            bot.send_message(chat_id, "✅ Отлично! Подписка подтверждена.",
+                             reply_markup=main_menu_keyboard(user_id))
             show_start(chat_id, user_id)
         return
 
-    
+    # Admin callbacks
     if call.data == "admin_users" and user_id == OWNER_ID:
         users = get_all_users()
         if not users:
@@ -904,7 +848,6 @@ def handle_callback(call):
             sub     = u[5] if u[5] != "none" else "—"
             balance = u[7] if len(u) > 7 else 0
             lines.append(f"{uname} | {role} | {sub} | 🪙{balance}")
-        # Разбиваем на части по 3500 символов (лимит TG — 4096)
         chunk = ""
         for line in lines:
             if len(chunk) + len(line) + 1 > 3500:
@@ -916,7 +859,6 @@ def handle_callback(call):
             bot.send_message(chat_id, chunk)
         return
 
-    # ── Последние платежи ──
     if call.data == "admin_payments" and user_id == OWNER_ID:
         payments = get_payments(20)
         if not payments:
@@ -928,7 +870,6 @@ def handle_callback(call):
         bot.send_message(chat_id, text)
         return
 
-    # ── Статус API ключей ──
     if call.data == "admin_check_keys" and user_id == OWNER_ID:
         bot.send_message(chat_id, "Проверяю ключи, подожди...")
         try:
@@ -946,7 +887,6 @@ def handle_callback(call):
         bot.send_message(chat_id, text)
         return
 
-    # ── Помощь по управлению подписками ──
     if call.data == "admin_subs_help" and user_id == OWNER_ID:
         bot.send_message(
             chat_id,
@@ -957,8 +897,7 @@ def handle_callback(call):
             "Снять подписку:\n"
             "/give @username remove sub\n\n"
             "Выдать роль:\n"
-            "/give @username role sponsor\n"
-            "/give @username role beta-tester 30d\n\n"
+            "/give @username role sponsor\n\n"
             "Сбросить роль:\n"
             "/give @username remove role\n\n"
             "Выдать монеты:\n"
@@ -966,7 +905,6 @@ def handle_callback(call):
         )
         return
 
-    # ── Тех.работы — ТОЛЬКО owner может переключить ──
     if call.data == "admin_toggle_maintenance" and user_id == OWNER_ID:
         new_val = "0" if is_maintenance() else "1"
         set_setting("maintenance", new_val)
@@ -980,7 +918,6 @@ def handle_callback(call):
         bot.send_message(chat_id, f"Тех.работы: {status}", reply_markup=markup if new_val == "1" else None)
         return
 
-    # ── Подарок (тест) ──
     if call.data == "pay_gift_menu":
         markup = types.InlineKeyboardMarkup(row_width=1)
         for plan_key, plan_data in PRICES.items():
@@ -992,7 +929,7 @@ def handle_callback(call):
         bot.send_message(
             chat_id,
             "🎁 Оплата подарком [TEST]\n\n"
-            "Это тестовая функция. Отправь боту подарок на сумму звёзд соответствующую тарифу.\n"
+            "Отправь боту подарок на сумму звёзд соответствующую тарифу.\n"
             "После отправки подарка администратор вручную активирует подписку.\n\n"
             "Выбери тариф:",
             reply_markup=markup
@@ -1003,15 +940,14 @@ def handle_callback(call):
         plan = call.data.replace("pay_gift_info_", "")
         price = PRICES.get(plan)
         if price:
-            bot.send_message(
+            send_temp(
                 chat_id,
                 f"🎁 Тариф: {price['label']}\n\n"
                 f"Отправь боту подарок на {price['stars']} звёзд.\n"
-                "После отправки подарка напиши /start и обратись к администратору."
+                "После отправки напиши /start и обратись к администратору.", delay=60
             )
         return
 
-    # ── Beta-tester за 50 звёзд ──
     if call.data == "buy_beta_tester":
         bot.send_invoice(
             chat_id,
@@ -1024,7 +960,6 @@ def handle_callback(call):
         )
         return
 
-    # ── Custom days ──
     if call.data == "pay_custom":
         user_states[user_id] = {"state": "waiting_custom_days"}
         markup = types.InlineKeyboardMarkup()
@@ -1044,7 +979,7 @@ def handle_callback(call):
         if has_active_sub(user_id):
             set_ai_model(user_id, "gemini")
             clear_history(user_id)
-            bot.send_message(chat_id, "Elyon Nova активирован!\n\nRежим глубокого мышления.",
+            bot.send_message(chat_id, "Elyon Nova активирован!\n\nРежим глубокого мышления.",
                              reply_markup=main_menu_keyboard(user_id))
         else:
             show_payment_options(chat_id, user_id)
@@ -1057,7 +992,7 @@ def handle_callback(call):
             activate_subscription(user_id, plan, chat_id)
             log_payment(user_id, call.from_user.username or "", plan, "coins", str(cost))
         else:
-            bot.send_message(chat_id, "Недостаточно монет.")
+            send_temp(chat_id, "Недостаточно монет.", delay=10)
     elif call.data.startswith("pay_stars_custom_"):
         days = int(call.data.replace("pay_stars_custom_", ""))
         rub, stars, _ = calc_custom_price(days)
@@ -1078,7 +1013,7 @@ def handle_callback(call):
             bot.send_message(chat_id, f"Оплата через CryptoBot\n{label}\n\nПосле оплаты нажми /check",
                              reply_markup=markup)
         else:
-            bot.send_message(chat_id, "Ошибка создания платежа. Попробуй позже.")
+            send_temp(chat_id, "Ошибка создания платежа. Попробуй позже.", delay=15)
     elif call.data.startswith("pay_stars_"):
         plan = call.data.replace("pay_stars_", "")
         price = PRICES[plan]
@@ -1097,35 +1032,30 @@ def handle_callback(call):
             bot.send_message(chat_id, f"Оплата через CryptoBot\n{price['label']}\n\nПосле оплаты нажми /check",
                              reply_markup=markup)
         else:
-            bot.send_message(chat_id, "Ошибка создания платежа. Попробуй позже.")
+            send_temp(chat_id, "Ошибка создания платежа. Попробуй позже.", delay=15)
 
 
-# ── Оплата ────────────────────────────────────────────────────────────────
-
+# ── Оплата Stars ──────────────────────────────────────────────────────────
 @bot.pre_checkout_query_handler(func=lambda q: True)
 def pre_checkout(query):
     bot.answer_pre_checkout_query(query.id, ok=True)
-
 
 @bot.message_handler(content_types=["successful_payment"])
 def payment_success(message):
     user_id = message.from_user.id
     payload = message.successful_payment.invoice_payload
 
-    # Beta-tester
     if payload.startswith("beta_tester_"):
         set_role(user_id, "beta-tester")
-        log_payment(user_id, message.from_user.username or "", "beta-tester", "stars",
-                    str(BETA_TESTER_STARS))
+        log_payment(user_id, message.from_user.username or "", "beta-tester", "stars", str(BETA_TESTER_STARS))
         bot.send_message(
             message.chat.id,
-            f"Поздравляем! Роль Beta-Tester получена!\n"
+            "Поздравляем! Роль Beta-Tester получена!\n"
             "Теперь в твоём профиле отображается специальная роль.",
             reply_markup=main_menu_keyboard(user_id)
         )
         return
 
-    # Stars custom
     if payload.startswith("custom_"):
         days = int(payload.replace("custom_", ""))
         rub, stars, _ = calc_custom_price(days)
@@ -1133,16 +1063,20 @@ def payment_success(message):
         log_payment(user_id, message.from_user.username or "", f"custom_{days}d", "stars", str(stars))
         return
 
-    # Stars plan
     plan = payload.replace("pro_", "")
     activate_subscription(user_id, plan, message.chat.id)
     log_payment(user_id, message.from_user.username or "", plan, "stars",
                 str(PRICES.get(plan, {}).get("stars", "?")))
 
 
+# ── /check — проверка CryptoBot платежа ──────────────────────────────────
 @bot.message_handler(commands=["check"])
 def check_crypto_payment(message):
     user_id = message.from_user.id
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except:
+        pass
     try:
         response = requests.get(
             "https://pay.crypt.bot/api/getInvoices",
@@ -1165,27 +1099,32 @@ def check_crypto_payment(message):
                         log_payment(user_id, message.from_user.username or "", plan_part, "crypto",
                                     CRYPTO_PRICES.get(plan_part, {}).get("amount", "?"))
                     return
-        bot.send_message(message.chat.id, "Платёж не найден. Попробуй через минуту.")
+        send_temp(message.chat.id, "Платёж не найден. Попробуй через минуту.", delay=15)
     except Exception as e:
         print("Check error:", e)
-        bot.send_message(message.chat.id, "Ошибка проверки платежа.")
+        send_temp(message.chat.id, "Ошибка проверки платежа.", delay=15)
 
 
-# ── Нижнее меню ───────────────────────────────────────────────────────────
-
+# ── Кнопки нижнего меню ───────────────────────────────────────────────────
 @bot.message_handler(func=lambda m: m.text == "💬 Chat with AI")
 def menu_chat(message):
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except:
+        pass
     user = get_user(message.from_user.id)
     if not user or user[4] == "none":
         show_start(message.chat.id, message.from_user.id)
         return
     model = "🆓 Elyon Core" if user[4] == "gpt" else "⭐ Elyon Nova"
-    bot.send_message(message.chat.id,
-                     f"Текущая модель: {model}\n\nНапиши сообщение или отправь файл!")
-
+    send_temp(message.chat.id, f"Текущая модель: {model}\n\nНапиши сообщение или отправь файл!", delay=8)
 
 @bot.message_handler(func=lambda m: m.text == "👤 Personal account")
 def menu_profile(message):
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except:
+        pass
     register_user(message.from_user.id, message.from_user.username or "")
     user = get_user(message.from_user.id)
     if not user:
@@ -1207,7 +1146,6 @@ def menu_profile(message):
 
     role_emoji = "👑" if user[3] == "owner" else ("🔬" if user[3] == "beta-tester" else "👤")
 
-    # Кнопка beta-tester если ещё нет
     markup = None
     if user[3] not in ("owner", "beta-tester"):
         markup = types.InlineKeyboardMarkup()
@@ -1230,53 +1168,59 @@ def menu_profile(message):
         reply_markup=markup
     )
 
-
 @bot.message_handler(func=lambda m: m.text == "🆓 Elyon Core")
 def switch_free(message):
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except:
+        pass
     register_user(message.from_user.id, message.from_user.username or "")
     set_ai_model(message.from_user.id, "gpt")
     clear_history(message.from_user.id)
-    bot.send_message(message.chat.id, "Elyon Core активирован!\n\nБыстрый бесплатный AI. Начинай общение!")
-
+    send_temp(message.chat.id, "Elyon Core активирован!\n\nБыстрый бесплатный AI. Начинай общение!", delay=8)
 
 @bot.message_handler(func=lambda m: m.text == "⭐ Elyon Nova")
 def switch_pro(message):
+    try:
+        bot.delete_message(message.chat.id, message.message_id)
+    except:
+        pass
     register_user(message.from_user.id, message.from_user.username or "")
     user_id = message.from_user.id
     if has_active_sub(user_id):
         set_ai_model(user_id, "gemini")
         clear_history(user_id)
-        bot.send_message(message.chat.id, "Elyon Nova активирован!\n\nAI с глубоким мышлением.")
+        send_temp(message.chat.id, "Elyon Nova активирован!\n\nAI с глубоким мышлением.", delay=8)
     else:
         show_payment_options(message.chat.id, user_id)
 
 
 # ── AI текстовые сообщения ────────────────────────────────────────────────
-
 MENU_TEXTS = {"💬 Chat with AI", "👤 Personal account", "🆓 Elyon Core", "⭐ Elyon Nova", "🛠 Control Panel"}
 
 def ensure_registered(message):
     register_user(message.from_user.id, message.from_user.username or "")
-
 
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
     ensure_registered(message)
     user_id = message.from_user.id
 
-    # Проверка подписки на каналы
     if not is_privileged(user_id) and not is_subscribed(user_id):
         send_subscribe_prompt(message.chat.id)
         return
 
-    # Ожидание ввода кастомных дней
     if user_id in user_states and user_states[user_id].get("state") == "waiting_custom_days":
+        try:
+            bot.delete_message(message.chat.id, message.message_id)
+        except:
+            pass
         try:
             days = int(message.text.strip())
             if days < 1 or days > 365:
                 raise ValueError
         except ValueError:
-            bot.send_message(message.chat.id, "Введи число от 1 до 365.")
+            send_temp(message.chat.id, "Введи число от 1 до 365.", delay=8)
             return
         del user_states[user_id]
         rub, stars, usdt = calc_custom_price(days)
@@ -1300,8 +1244,7 @@ def handle_message(message):
         return
 
     if is_maintenance() and not is_privileged(user_id):
-        bot.send_message(message.chat.id,
-                         "Технические работы\n\nElyon AI временно недоступен.")
+        send_temp(message.chat.id, "Технические работы\n\nElyon AI временно недоступен.", delay=20)
         return
 
     user = get_user(user_id)
@@ -1315,20 +1258,20 @@ def handle_message(message):
         return
 
     if ai_model == "gemini" and not has_active_sub(user_id):
-        bot.send_message(message.chat.id, "Подписка истекла.")
+        send_temp(message.chat.id, "Подписка истекла.", delay=10)
         show_payment_options(message.chat.id, user_id)
         return
 
-    # Проверка дневного лимита (в тест-режиме owner тоже проверяется)
     is_pro = (ai_model == "gemini")
     allowed, current, limit = check_daily_limit(user_id, is_pro)
     if not allowed and not (user_id == OWNER_ID and not owner_test_mode):
         model_name = "Elyon Nova" if is_pro else "Elyon Core"
-        bot.send_message(
+        send_temp(
             message.chat.id,
             f"Вы достигли дневного лимита сообщений ({limit}/{limit}).\n\n"
             f"Лимит для {model_name}: {limit} сообщений в день.\n"
-            f"Лимит обновится в 00:00 по московскому времени."
+            f"Лимит обновится в 00:00 по московскому времени.",
+            delay=20
         )
         return
 
@@ -1347,15 +1290,16 @@ def handle_message(message):
         error_text = str(e)
         print("AI error:", e)
         if "429" in error_text or "RESOURCE_EXHAUSTED" in error_text:
-            bot.send_message(message.chat.id, "Слишком много запросов. Попробуй через минуту.")
+            send_temp(message.chat.id, "Слишком много запросов. Попробуй через минуту.", delay=15)
         elif "404" in error_text or "NOT_FOUND" in error_text:
-            bot.send_message(message.chat.id, "Модель недоступна. Обратитесь к администратору.")
+            send_temp(message.chat.id, "Модель недоступна. Обратитесь к администратору.", delay=15)
         else:
-            bot.send_message(message.chat.id, f"Ошибка: {error_text[:200]}")
+            send_temp(message.chat.id, f"Ошибка: {error_text[:200]}", delay=20)
 
 
-# ── Flask API ─────────────────────────────────────────────────────────────
-
+# ════════════════════════════════════════════════════════════════
+# Flask API
+# ════════════════════════════════════════════════════════════════
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "*"}}, supports_credentials=False)
 
@@ -1366,7 +1310,6 @@ def after_request(response):
     response.headers.add("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
     return response
 
-
 @app.route("/api/chat", methods=["POST", "OPTIONS"])
 def api_chat():
     if request.method == "OPTIONS":
@@ -1376,7 +1319,6 @@ def api_chat():
         user_id  = data.get("user_id")
         model    = data.get("model", "gpt")
         messages = data.get("messages", [])
-        chat_id  = data.get("chat_id")
         if not user_id or not messages:
             return jsonify({"error": "Missing user_id or messages"}), 400
         if is_maintenance() and not (user_id == OWNER_ID and not owner_test_mode):
@@ -1394,10 +1336,8 @@ def api_chat():
                 return jsonify({"error": "No active subscription"}), 403
             reply = ask_absolution(messages)
         else:
-            # Core — DeepSeek
             reply = ask_gpt(messages)
 
-        # Проверка дневного лимита (owner в обычном режиме — без лимита)
         if not (user_id == OWNER_ID and not owner_test_mode):
             is_pro = (model == "gemini")
             allowed, current, limit = check_daily_limit(user_id, is_pro)
@@ -1409,7 +1349,6 @@ def api_chat():
         return jsonify({"reply": reply})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 
 @app.route("/api/user/<int:user_id>", methods=["GET", "OPTIONS"])
 def api_user(user_id):
@@ -1432,16 +1371,12 @@ def api_user(user_id):
         "purchase_history": [list(p) for p in get_user_purchase_history(user_id)],
     })
 
-
-# ── Mini App — чаты (сохранение на сервере) ───────────────────────────────
-
 @app.route("/api/chats/<int:user_id>", methods=["GET", "OPTIONS"])
 def api_get_chats(user_id):
     if request.method == "OPTIONS":
         return "", 204
     chats = get_mini_app_chats(user_id)
     return jsonify({"chats": chats})
-
 
 @app.route("/api/chats/<int:user_id>", methods=["POST", "OPTIONS"])
 def api_save_chat(user_id):
@@ -1460,7 +1395,6 @@ def api_save_chat(user_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
 @app.route("/api/chats/<int:user_id>/<chat_id>", methods=["DELETE", "OPTIONS"])
 def api_delete_chat(user_id, chat_id):
     if request.method == "OPTIONS":
@@ -1468,14 +1402,12 @@ def api_delete_chat(user_id, chat_id):
     delete_mini_app_chat(user_id, chat_id)
     return jsonify({"ok": True})
 
-
 @app.route("/api/file_b64", methods=["POST", "OPTIONS"])
 def api_file_b64():
     if request.method == "OPTIONS":
         return "", 204
     try:
         import base64 as b64
-        import json as json_lib
         data      = request.json
         user_id   = data.get("user_id")
         model     = data.get("model", "gpt")
@@ -1517,7 +1449,6 @@ def api_file_b64():
         return jsonify({"reply": reply})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
 
 @app.route("/api/file", methods=["POST", "OPTIONS"])
 def api_file():
@@ -1566,7 +1497,6 @@ def api_file():
 
 
 # ── Auth endpoints ────────────────────────────────────────────────────────
-
 import hashlib
 import hmac
 import time
@@ -1575,86 +1505,55 @@ import json as _json
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID",
     "468899724697-mct44qubsrdaps8ll6m4npv34k6jeucn.apps.googleusercontent.com")
 
-
 def _upsert_web_user(email, first_name, last_name, avatar="", provider="email"):
-    """Создаёт или обновляет пользователя из веб-приложения. Возвращает user dict."""
     import database as _db
-    import sqlite3
-
-    db_conn   = _db.conn
-    db_cursor = _db.cursor
-
-    # Ищем по email
-    db_cursor.execute("SELECT user_id FROM users WHERE username = ?", (email,))
-    row = db_cursor.fetchone()
+    _db.cursor.execute("SELECT user_id FROM users WHERE username = ?", (email,))
+    row = _db.cursor.fetchone()
     if row:
         user_id = row[0]
     else:
         user_id = abs(hash(email + provider)) % (10**12)
-        db_cursor.execute(
+        _db.cursor.execute(
             "INSERT OR IGNORE INTO users (user_id, username, joined_at, role) VALUES (?, ?, ?, ?)",
             (user_id, email, datetime.now().strftime("%d.%m.%Y %H:%M"), "default user")
         )
-        db_conn.commit()
-    return {
-        "user_id":    user_id,
-        "email":      email,
-        "first_name": first_name,
-        "last_name":  last_name,
-        "avatar":     avatar,
-        "provider":   provider,
-    }
-
+        _db.conn.commit()
+    return {"user_id": user_id, "email": email, "first_name": first_name,
+            "last_name": last_name, "avatar": avatar, "provider": provider}
 
 @app.route("/api/auth/google", methods=["POST", "OPTIONS"])
 def auth_google():
-    """Верифицирует Google JWT токен (credential от Google Identity Services)."""
     if request.method == "OPTIONS":
         return "", 204
     try:
-        from urllib.request import urlopen
         import base64 as _b64
-
         data  = request.json or {}
         token = data.get("token", "")
         if not token:
             return jsonify({"ok": False, "error": "Missing token"}), 400
-
-        # Декодируем JWT payload (без верификации подписи — для продакшна
-        # нужна библиотека google-auth, но для старта достаточно)
         parts = token.split(".")
         if len(parts) < 2:
             return jsonify({"ok": False, "error": "Invalid token"}), 400
-
-        # Добавляем паддинг для base64
         payload_b64 = parts[1] + "=" * (4 - len(parts[1]) % 4)
         payload = _json.loads(_b64.urlsafe_b64decode(payload_b64))
-
-        # Базовая проверка
         if payload.get("aud") != GOOGLE_CLIENT_ID:
             return jsonify({"ok": False, "error": "Invalid audience"}), 401
         if payload.get("exp", 0) < time.time():
             return jsonify({"ok": False, "error": "Token expired"}), 401
-
         email      = payload.get("email", "")
         first_name = payload.get("given_name", "")
         last_name  = payload.get("family_name", "")
         avatar     = payload.get("picture", "")
-
         if not email:
             return jsonify({"ok": False, "error": "No email in token"}), 400
-
         user = _upsert_web_user(email, first_name, last_name, avatar, "google")
         return jsonify({"ok": True, "user": user})
-
     except Exception as e:
         print("auth_google error:", e)
         return jsonify({"ok": False, "error": str(e)}), 500
 
-
 @app.route("/api/auth/google_profile", methods=["POST", "OPTIONS"])
 def auth_google_profile():
-    """Принимает профиль пользователя из Google OAuth (access token flow)."""
     if request.method == "OPTIONS":
         return "", 204
     try:
@@ -1664,100 +1563,68 @@ def auth_google_profile():
         first_name = profile.get("given_name", "")
         last_name  = profile.get("family_name", "")
         avatar     = profile.get("picture", "")
-
         if not email:
             return jsonify({"ok": False, "error": "No email in profile"}), 400
-
         user = _upsert_web_user(email, first_name, last_name, avatar, "google")
         return jsonify({"ok": True, "user": user})
-
     except Exception as e:
         print("auth_google_profile error:", e)
         return jsonify({"ok": False, "error": str(e)}), 500
 
-
 @app.route("/api/auth/telegram", methods=["POST", "OPTIONS"])
 def auth_telegram():
-    """
-    Верифицирует данные от Telegram Login Widget.
-    Проверяет HMAC-SHA256 подпись используя BOT_TOKEN.
-    """
     if request.method == "OPTIONS":
         return "", 204
     try:
         data = request.json or {}
         user = data.get("user", {})
-
         if not user or "id" not in user:
             return jsonify({"ok": False, "error": "Missing user data"}), 400
-
-        # Верификация подписи Telegram
         auth_data = {k: v for k, v in user.items() if k != "hash"}
-        check_string = "\n".join(
-            f"{k}={v}" for k, v in sorted(auth_data.items())
-        )
+        check_string = "\n".join(f"{k}={v}" for k, v in sorted(auth_data.items()))
         secret_key = hashlib.sha256(TOKEN.encode()).digest()
         computed   = hmac.new(secret_key, check_string.encode(), hashlib.sha256).hexdigest()
-
         if computed != user.get("hash", ""):
             return jsonify({"ok": False, "error": "Invalid signature"}), 401
-
-        # Проверяем свежесть (не старше 24 часов)
         auth_date = int(user.get("auth_date", 0))
         if time.time() - auth_date > 86400:
             return jsonify({"ok": False, "error": "Auth data expired"}), 401
-
         tg_id      = user["id"]
         username   = user.get("username", f"tg_{tg_id}")
         first_name = user.get("first_name", "")
         last_name  = user.get("last_name", "")
         avatar     = user.get("photo_url", "")
-
-        # Регистрируем / обновляем пользователя
         register_user(tg_id, username)
-
         web_user = {
-            "user_id":    tg_id,
-            "email":      f"{username}@telegram",
-            "first_name": first_name,
-            "last_name":  last_name,
-            "avatar":     avatar,
-            "provider":   "telegram",
-            "username":   username,
+            "user_id": tg_id, "email": f"{username}@telegram",
+            "first_name": first_name, "last_name": last_name,
+            "avatar": avatar, "provider": "telegram", "username": username,
         }
         return jsonify({"ok": True, "user": web_user})
-
     except Exception as e:
         print("auth_telegram error:", e)
         return jsonify({"ok": False, "error": str(e)}), 500
 
-
 @app.route("/api/auth/email", methods=["POST", "OPTIONS"])
 def auth_email():
-    """Email/password авторизация. В продакшне добавить хэширование паролей."""
     if request.method == "OPTIONS":
         return "", 204
     try:
         import hashlib as _hl
         import database as _db
-
         data       = request.json or {}
         action     = data.get("action", "signin")
         email      = data.get("email", "").lower().strip()
         password   = data.get("password", "")
         first_name = data.get("first_name", "")
         last_name  = data.get("last_name", "")
-
         if not email or not password:
             return jsonify({"ok": False, "error": "Missing email or password"}), 400
-
         pw_hash = _hl.sha256(password.encode()).hexdigest()
-
         if action == "signup":
             _db.cursor.execute("SELECT user_id FROM users WHERE username = ?", (email,))
             if _db.cursor.fetchone():
                 return jsonify({"ok": False, "error": "Email already registered"}), 409
-
             user_id = abs(hash(email + pw_hash)) % (10**12)
             _db.cursor.execute(
                 "INSERT OR IGNORE INTO users (user_id, username, joined_at, role) VALUES (?, ?, ?, ?)",
@@ -1770,26 +1637,21 @@ def auth_email():
             _db.conn.commit()
             user = _upsert_web_user(email, first_name, last_name, "", "email")
             return jsonify({"ok": True, "verify": False, "user": user})
-
         else:
             stored = get_setting(f"pw_{email}")
             if not stored or stored != pw_hash:
                 return jsonify({"ok": False, "error": "Invalid email or password"}), 401
             user = _upsert_web_user(email, "", "", "", "email")
             return jsonify({"ok": True, "user": user})
-
     except Exception as e:
         print("auth_email error:", e)
         return jsonify({"ok": False, "error": str(e)}), 500
-
 
 @app.route("/api/admin/stats", methods=["GET", "OPTIONS"])
 def api_admin_stats():
     if request.method == "OPTIONS":
         return "", 204
-    stats = get_stats()
-    return jsonify(stats)
-
+    return jsonify(get_stats())
 
 @app.route("/api/admin/users", methods=["GET", "OPTIONS"])
 def api_admin_users():
@@ -1807,7 +1669,6 @@ def api_admin_users():
         })
     return jsonify({"users": result})
 
-
 @app.route("/api/bot_info", methods=["GET"])
 def api_bot_info():
     try:
@@ -1816,10 +1677,8 @@ def api_bot_info():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
 @app.route("/api/auth/telegram_token", methods=["POST", "OPTIONS"])
 def auth_telegram_token():
-    """Верифицирует токен из /auth команды бота."""
     if request.method == "OPTIONS":
         return "", 204
     try:
@@ -1827,24 +1686,18 @@ def auth_telegram_token():
         token = data.get("token", "")
         if not token:
             return jsonify({"ok": False, "error": "Missing token"}), 400
-
         info = _auth_tokens.get(token)
         if not info:
             return jsonify({"ok": False, "error": "Invalid or already used token"}), 401
-
         if datetime.now().timestamp() > info["expires"]:
             _auth_tokens.pop(token, None)
             return jsonify({"ok": False, "error": "Token expired. Use /auth again in bot."}), 401
-
-        # Одноразовый — удаляем после использования
         _auth_tokens.pop(token, None)
-
         user_id  = info["user_id"]
         username = info["username"]
         register_user(user_id, username)
         user     = get_user(user_id)
         sub_type = user[5] if user else "none"
-
         web_user = {
             "user_id":    user_id,
             "email":      f"{username}@telegram" if username else f"tg_{user_id}@telegram",
@@ -1856,28 +1709,32 @@ def auth_telegram_token():
             "sub_type":   sub_type,
         }
         return jsonify({"ok": True, "user": web_user})
-
     except Exception as e:
         print("auth_telegram_token error:", e)
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
-# ════════════════════════════════════════════════════════════════════
-# DonatePay Webhook
-# URL: https://elyon-bot.onrender.com/api/donatepay_webhook  
+# ════════════════════════════════════════════════════════════════
+# DonatePay Webhook — автоактивация подписки
+# URL: https://elyon-bot.onrender.com/api/donatepay_webhook
 # Render env: DONATEPAY_SECRET = <секрет из DonatePay>
-# ════════════════════════════════════════════════════════════════════
+# Пользователь должен указать свой Telegram ID в поле "Комментарий"
+# ════════════════════════════════════════════════════════════════
 import hmac as _hmac
 import hashlib as _hashlib
 
 DONATEPAY_SECRET = os.environ.get("DONATEPAY_SECRET", "")
 
 _DP_TIER_MAP = {
-    "91": "nova",   "91.00": "nova",
-    "182": "pro",   "182.00": "pro",
+    "91":  "nova",       "91.00":  "nova",
+    "182": "pro",        "182.00": "pro",
     "265": "absolution", "265.00": "absolution",
 }
-
+_DP_TIER_LABELS = {
+    "nova":       "Elyon Nova — 91 ₽",
+    "pro":        "Elyon PRO — 182 ₽",
+    "absolution": "Elyon Absolution — 265 ₽",
+}
 
 @app.route("/api/donatepay_webhook", methods=["POST", "OPTIONS"])
 def donatepay_webhook():
@@ -1889,7 +1746,7 @@ def donatepay_webhook():
         if data.get("notification_type") != "donation":
             return jsonify({"ok": True, "skip": True})
 
-        # Проверяем подпись
+        # Проверяем подпись если секрет задан
         if DONATEPAY_SECRET:
             sig = request.headers.get("X-DonatePay-Signature", "")
             raw = request.get_data(as_text=True)
@@ -1907,12 +1764,13 @@ def donatepay_webhook():
         try:
             user_id = int(uid_raw)
         except (ValueError, TypeError):
+            # user_id не определён — уведомляем владельца для ручной активации
             try:
                 bot.send_message(
                     OWNER_ID,
                     f"💰 DonatePay: платёж {amount_raw}₽ от {username}\n"
                     f"Комментарий: {comment!r}\n"
-                    f"⚠️ user_id не определён — активируй вручную:\n"
+                    f"⚠️ user_id не указан — активируй вручную:\n"
                     f"/give @username nova 30d"
                 )
             except Exception:
@@ -1921,35 +1779,42 @@ def donatepay_webhook():
 
         tier = _DP_TIER_MAP.get(amount_raw)
         if not tier:
+            # Неизвестная сумма — уведомляем
+            try:
+                bot.send_message(
+                    OWNER_ID,
+                    f"💰 DonatePay: платёж {amount_raw}₽ от {username} (ID: {user_id})\n"
+                    f"⚠️ Неизвестная сумма. Активируй вручную."
+                )
+            except Exception:
+                pass
             return jsonify({"ok": True, "skip": "unknown_amount"})
 
-        tier_labels = {
-            "nova":       "Elyon Nova — 91 ₽",
-            "pro":        "Elyon PRO — 182 ₽",
-            "absolution": "Elyon Absolution — 265 ₽",
-        }
-
+        # Активируем подписку на 30 дней
         until_str = (datetime.now() + timedelta(days=30)).strftime("%d.%m.%Y %H:%M")
         set_subscription(user_id, tier, until_str)
         set_ai_model(user_id, "gemini")
         log_payment(user_id, username, tier, "donatepay", amount_raw)
 
+        # Уведомляем пользователя
         try:
             bot.send_message(
                 user_id,
                 f"✅ Оплата получена!\n\n"
-                f"Подписка {tier_labels[tier]} активирована на 30 дней.\n"
+                f"Подписка {_DP_TIER_LABELS[tier]} активирована на 30 дней.\n"
+                f"До: {until_str}\n\n"
                 f"Используй /start чтобы начать."
             )
         except Exception as e:
-            print(f"DonatePay notify error: {e}")
+            print(f"DonatePay notify user error: {e}")
 
+        # Уведомляем владельца
         try:
             bot.send_message(
                 OWNER_ID,
-                f"💰 DonatePay!\n"
+                f"💰 DonatePay авто-активация!\n"
                 f"Пользователь: {user_id} (@{username})\n"
-                f"Тариф: {tier_labels[tier]}\n"
+                f"Тариф: {_DP_TIER_LABELS[tier]}\n"
                 f"До: {until_str}"
             )
         except Exception:
@@ -1967,12 +1832,12 @@ def health():
     return jsonify({"status": "ok"})
 
 
-# ── Запуск ────────────────────────────────────────────────────────────────
-
+# ════════════════════════════════════════════════════════════════
+# Запуск
+# ════════════════════════════════════════════════════════════════
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port, debug=False)
-
 
 def keep_alive():
     import time
@@ -1985,17 +1850,13 @@ def keep_alive():
         except Exception as e:
             print(f"keep_alive error: {e}")
 
-
 def start_polling():
-    """Запускает polling с защитой от 409 конфликта."""
     import time as _time
-    # Сначала удаляем webhook если есть
     try:
         bot.delete_webhook(drop_pending_updates=True)
         print("Webhook cleared.")
     except Exception as e:
         print(f"Webhook clear error: {e}")
-
     retries = 0
     while True:
         try:
@@ -2007,12 +1868,11 @@ def start_polling():
             if "409" in err or "Conflict" in err:
                 retries += 1
                 wait = min(30, 5 * retries)
-                print(f"409 Conflict — another instance running. Retry in {wait}s...")
+                print(f"409 Conflict — retry in {wait}s...")
                 _time.sleep(wait)
             else:
                 print(f"Polling error: {e}")
                 _time.sleep(5)
-
 
 try:
     print("bot is running...")
