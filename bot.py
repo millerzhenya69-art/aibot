@@ -1924,7 +1924,7 @@ def donatepay_webhook():
             return jsonify({"ok": True, "skip": "unknown_amount"})
 
         tier_labels = {
-            "nova":       "Elyon Nova — 91 ₽",
+            "nova":       "Elyon Nova — 25 ₽",
             "pro":        "Elyon PRO — 182 ₽",
             "absolution": "Elyon Absolution — 265 ₽",
         }
