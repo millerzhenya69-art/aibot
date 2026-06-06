@@ -1860,6 +1860,103 @@ def auth_telegram_token():
     except Exception as e:
         print("auth_telegram_token error:", e)
         return jsonify({"ok": False, "error": str(e)}), 500
+      # ══════════════════════════════════════════════════════════════════
+# DonatePay Webhook
+# URL: https://elyon-bot.onrender.com/api/donatepay_webhook  
+# Render env: DONATEPAY_SECRET = <секрет из DonatePay>
+# ══════════════════════════════════════════════════════════════════
+import hmac as _hmac
+import hashlib as _hashlib
+
+DONATEPAY_SECRET = os.environ.get("DONATEPAY_SECRET", "")
+
+_DP_TIER_MAP = {
+    "91": "nova",   "91.00": "nova",
+    "182": "pro",   "182.00": "pro",
+    "265": "absolution", "265.00": "absolution",
+}
+
+@app.route("/api/donatepay_webhook", methods=["POST", "OPTIONS"])
+def donatepay_webhook():
+    if request.method == "OPTIONS":
+        return "", 204
+    try:
+        data = request.json or {}
+
+        if data.get("notification_type") != "donation":
+            return jsonify({"ok": True, "skip": True})
+
+        # Проверяем подпись
+        if DONATEPAY_SECRET:
+            sig = request.headers.get("X-DonatePay-Signature", "")
+            raw = request.get_data(as_text=True)
+            exp = _hmac.new(DONATEPAY_SECRET.encode(), raw.encode(), _hashlib.sha256).hexdigest()
+            if not _hmac.compare_digest(sig, exp):
+                return jsonify({"ok": False, "error": "Bad signature"}), 403
+
+        amount_raw = str(data.get("sum", "0")).split(".")[0]
+        username   = data.get("username", "unknown")
+        comment    = (data.get("comment") or "").strip()
+        vars_data  = data.get("vars") or {}
+
+        # user_id из поля vars или из комментария
+        uid_raw = vars_data.get("user_id") or comment
+        try:
+            user_id = int(uid_raw)
+        except (ValueError, TypeError):
+            try:
+                bot.send_message(
+                    OWNER_ID,
+                    f"💰 DonatePay: платёж {amount_raw}₽ от {username}\n"
+                    f"Комментарий: {comment!r}\n"
+                    f"⚠️ user_id не определён — активируй вручную:\n"
+                    f"/give @username nova 30d"
+                )
+            except Exception:
+                pass
+            return jsonify({"ok": True, "manual": True})
+
+        tier = _DP_TIER_MAP.get(amount_raw)
+        if not tier:
+            return jsonify({"ok": True, "skip": "unknown_amount"})
+
+        tier_labels = {
+            "nova":       "Elyon Nova — 91 ₽",
+            "pro":        "Elyon PRO — 182 ₽",
+            "absolution": "Elyon Absolution — 265 ₽",
+        }
+
+        until_str = (datetime.now() + timedelta(days=30)).strftime("%d.%m.%Y %H:%M")
+        set_subscription(user_id, tier, until_str)
+        set_ai_model(user_id, "gemini")
+        log_payment(user_id, username, tier, "donatepay", amount_raw)
+
+        try:
+            bot.send_message(
+                user_id,
+                f"✅ Оплата получена!\n\n"
+                f"Подписка {tier_labels[tier]} активирована на 30 дней.\n"
+                f"Используй /start чтобы начать."
+            )
+        except Exception as e:
+            print(f"DonatePay notify error: {e}")
+
+        try:
+            bot.send_message(
+                OWNER_ID,
+                f"💰 DonatePay!\n"
+                f"Пользователь: {user_id} (@{username})\n"
+                f"Тариф: {tier_labels[tier]}\n"
+                f"До: {until_str}"
+            )
+        except Exception:
+            pass
+
+        return jsonify({"ok": True, "tier": tier, "user_id": user_id})
+
+    except Exception as e:
+        print(f"DonatePay webhook error: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/health", methods=["GET"])
