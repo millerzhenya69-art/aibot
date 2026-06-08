@@ -8,35 +8,28 @@ from google.genai import types as genai_types
 
 # ══════════════════════════════════════════════════════════════════
 # МОДЕЛИ:
-#   Elyon Core        → gemini-2.5-flash-lite  (бесплатно, быстро)
-#   Elyon Nova        → gemini-2.5-flash        (платно, thinking)
-#   Elyon PRO         → gemini-2.5-pro           (платно, thinking)
-#   Elyon Absolution  → gemini-2.5-pro           (платно, thinking+)
+#   Elyon Core        → gemini-2.5-flash-lite-preview-06-17
+#   Elyon Nova        → gemini-2.5-flash
+#   Elyon PRO         → gemini-2.5-pro
+#   Elyon Absolution  → gemini-2.5-pro
 #
-# ЛИМИТЫ (задаются в database.py):
-#   Core        → 15 сообщений/день
-#   Nova        → 30 сообщений/день
-#   PRO         → 30 сообщений/день
-#   Absolution  → 30 сообщений/день
+# ВАЖНО по exhausted: убедись что GEMINI_PRO_KEY_1/2 и GEMINI_ABS_KEY_1/2
+# созданы в ОТДЕЛЬНЫХ Google Cloud проектах от NOVA ключей.
+# Один проект = одна квота. Разные проекты = разные квоты.
 # ══════════════════════════════════════════════════════════════════
 
-# ── Ключи ─────────────────────────────────────────────────────────
-
-# Nova ключи — используются и для Core (flash-lite), и для Nova (flash)
 GEMINI_NOVA_KEYS = [
     os.environ.get("GEMINI_NOVA_KEY_1", ""),
     os.environ.get("GEMINI_NOVA_KEY_2", ""),
 ]
 GEMINI_NOVA_KEYS = [k for k in GEMINI_NOVA_KEYS if k]
 
-# PRO ключи — для PRO и Absolution (gemini-2.5-pro)
 GEMINI_PRO_KEYS = [
     os.environ.get("GEMINI_PRO_KEY_1", ""),
     os.environ.get("GEMINI_PRO_KEY_2", ""),
 ]
 GEMINI_PRO_KEYS = [k for k in GEMINI_PRO_KEYS if k]
 
-# ABS ключи — для Absolution (если отдельные, иначе fallback на PRO)
 GEMINI_ABS_KEYS = [
     os.environ.get("GEMINI_ABS_KEY_1", ""),
     os.environ.get("GEMINI_ABS_KEY_2", ""),
@@ -47,23 +40,28 @@ GEMINI_ABS_KEYS = [k for k in GEMINI_ABS_KEYS if k]
 if not GEMINI_NOVA_KEYS:
     _fb = [os.environ.get(f"GEMINI_PRO_KEY_{i}", "") for i in range(1, 4)]
     GEMINI_NOVA_KEYS = [k for k in _fb if k]
-
 if not GEMINI_PRO_KEYS and GEMINI_NOVA_KEYS:
     GEMINI_PRO_KEYS = GEMINI_NOVA_KEYS
-
 if not GEMINI_ABS_KEYS and GEMINI_PRO_KEYS:
     GEMINI_ABS_KEYS = GEMINI_PRO_KEYS
 
-# Обратная совместимость для bot.py
 GEMINI_FREE_KEYS = GEMINI_NOVA_KEYS
 
-# ── Названия моделей ──────────────────────────────────────────────
-MODEL_CORE        = "gemini-2.5-flash-lite"   # Elyon Core — быстрая, бесплатная
-MODEL_NOVA        = "gemini-2.5-flash"         # Elyon Nova
-MODEL_PRO         = "gemini-2.5-pro"           # Elyon PRO
-MODEL_ABSOLUTION  = "gemini-2.5-pro"           # Elyon Absolution (тот же pro, но макс. thinking)
+# ── Модели ────────────────────────────────────────────────────────
+# flash-lite-preview — стабильная preview версия с отдельной квотой
+MODEL_CORE       = "gemini-2.5-flash-lite-preview-06-17"
+MODEL_NOVA       = "gemini-2.5-flash"
+# gemini-2.5-pro требует Google Cloud Billing
+# На бесплатном AI Studio — используем flash с большим thinking
+# Для включения pro: замени на "gemini-2.5-pro"
+MODEL_PRO        = "gemini-2.5-flash"
+MODEL_ABSOLUTION = "gemini-2.5-flash"
 
-# ── Системный промпт ──────────────────────────────────────────────
+# ВАЖНО: gemini-2.5-pro требует billing в Google Cloud
+# На бесплатном AI Studio tier — недоступна (возвращает 429)
+# Используем gemini-2.5-flash с максимальным thinking для PRO/ABS
+# Если у тебя включён billing — замени обратно на "gemini-2.5-pro"
+MODEL_PRO_FALLBACK = "gemini-2.5-flash"
 
 SYSTEM_PROMPT = (
     "You are Elyon AI — a smart and helpful assistant. "
@@ -79,8 +77,6 @@ SYSTEM_PROMPT = (
     "For code examples, write the code without code fences or backticks. "
     "Use plain dashes or numbers for lists."
 )
-
-# ── Маскировка идентичности ───────────────────────────────────────
 
 REPLACE_PAIRS = [
     (r'\bGemini\b',         'Elyon'),
@@ -99,18 +95,15 @@ def mask_identity(text):
         text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
     return text
 
-
 def clean_text(text):
     if not text:
         return text
     code_blocks = {}
     idx = [0]
-
     def save_code(m):
         key = f"\x00CODE{idx[0]}\x00"; idx[0] += 1
         code_blocks[key] = (m.group(1).strip(), m.group(2))
         return key
-
     text = re.sub(r'```(\w*)\n?([\s\S]*?)```', save_code, text)
     text = re.sub(r'`([^`\n]+)`',   r'\1', text)
     text = re.sub(r'\*{3}(.+?)\*{3}', r'\1', text, flags=re.DOTALL)
@@ -131,7 +124,6 @@ def clean_text(text):
     text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
-
 def safe_text(text):
     if text is None:
         return "Пустой ответ от AI."
@@ -139,8 +131,6 @@ def safe_text(text):
     text = mask_identity(text)
     text = clean_text(text)
     return text
-
-# ── Построение истории сообщений ──────────────────────────────────
 
 def build_contents(messages):
     contents = []
@@ -152,8 +142,6 @@ def build_contents(messages):
         ))
     return contents
 
-# ── Определяем нужен ли веб-поиск ────────────────────────────────
-
 SEARCH_TRIGGERS = [
     r'\b(кто такой|who is|who are|расскажи о|tell me about)\b',
     r'\b(сейчас|сегодня|now|today|current|latest|новости|news|2024|2025|2026)\b',
@@ -163,44 +151,32 @@ SEARCH_TRIGGERS = [
 ]
 
 def needs_search(text):
-    text_lower = text.lower()
-    return any(re.search(p, text_lower, re.IGNORECASE) for p in SEARCH_TRIGGERS)
+    return any(re.search(p, text.lower(), re.IGNORECASE) for p in SEARCH_TRIGGERS)
 
-# ── Основная функция запроса к Gemini ─────────────────────────────
-
-def ask_gemini_with_keys(messages, keys, model, thinking_budget=0, use_search=False):
+def ask_gemini_with_keys(messages, keys, model, thinking_budget=0,
+                          use_search=False, fallback_model=None):
     """
-    thinking_budget:
-        0     = thinking отключён (Core)
-        1024  = лёгкое thinking (Nova)
-        8000  = глубокое thinking (PRO)
-        16000 = максимальное thinking (Absolution)
+    thinking_budget: 0=нет, 1024=Nova, 8000=PRO, 16000=Absolution
+    fallback_model: если основная модель exhausted — пробуем fallback
     """
     if not keys:
         raise Exception("NO_KEYS: ключи не настроены в переменных окружения")
 
     shuffled = keys.copy()
     random.shuffle(shuffled)
+    all_exhausted = True
 
     for key in shuffled:
         try:
             client = genai.Client(api_key=key)
-            cfg = genai_types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT
-            )
+            cfg = genai_types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT)
             if thinking_budget > 0:
-                cfg.thinking_config = genai_types.ThinkingConfig(
-                    thinking_budget=thinking_budget
-                )
+                cfg.thinking_config = genai_types.ThinkingConfig(thinking_budget=thinking_budget)
             if use_search:
-                cfg.tools = [genai_types.Tool(
-                    google_search=genai_types.GoogleSearch()
-                )]
+                cfg.tools = [genai_types.Tool(google_search=genai_types.GoogleSearch())]
 
             response = client.models.generate_content(
-                model=model,
-                contents=build_contents(messages),
-                config=cfg
+                model=model, contents=build_contents(messages), config=cfg
             )
             return safe_text(response.text)
 
@@ -211,19 +187,37 @@ def ask_gemini_with_keys(messages, keys, model, thinking_budget=0, use_search=Fa
                 continue
             if "503" in err or "UNAVAILABLE" in err:
                 continue
+            all_exhausted = False
             raise
+
+    # Все ключи exhausted — пробуем fallback модель
+    if fallback_model and fallback_model != model:
+        print(f"All keys exhausted for {model}, trying fallback {fallback_model}")
+        shuffled2 = keys.copy()
+        random.shuffle(shuffled2)
+        for key in shuffled2:
+            try:
+                client = genai.Client(api_key=key)
+                cfg = genai_types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT)
+                if thinking_budget > 0:
+                    cfg.thinking_config = genai_types.ThinkingConfig(thinking_budget=min(thinking_budget, 8000))
+                response = client.models.generate_content(
+                    model=fallback_model,
+                    contents=build_contents(messages),
+                    config=cfg
+                )
+                return safe_text(response.text)
+            except Exception as e:
+                err = str(e)
+                if "429" in err or "RESOURCE_EXHAUSTED" in err:
+                    continue
+                raise
 
     raise Exception("Лимит запросов исчерпан. Попробуй через минуту.")
 
-# ══════════════════════════════════════════════════════════════════
-# ПУБЛИЧНЫЕ ФУНКЦИИ — по одной на каждый тир
-# ══════════════════════════════════════════════════════════════════
 
 def ask_gpt(messages):
-    """
-    Elyon Core — gemini-2.5-flash-lite
-    Быстро, бесплатно, без thinking. Лимит: 15 сообщений/день.
-    """
+    """Elyon Core — gemini-2.5-flash-lite-preview. 15 сообщений/день."""
     last = messages[-1]["content"] if messages else ""
     keys = GEMINI_NOVA_KEYS or GEMINI_PRO_KEYS or GEMINI_ABS_KEYS
     if not keys:
@@ -231,15 +225,12 @@ def ask_gpt(messages):
     return ask_gemini_with_keys(
         messages, keys, MODEL_CORE,
         thinking_budget=0,
-        use_search=needs_search(last)
+        use_search=needs_search(last),
+        fallback_model=MODEL_NOVA
     )
 
-
 def ask_nova(messages):
-    """
-    Elyon Nova — gemini-2.5-flash с thinking.
-    Лимит: 30 сообщений/день.
-    """
+    """Elyon Nova — gemini-2.5-flash с thinking. 30 сообщений/день."""
     last = messages[-1]["content"] if messages else ""
     return ask_gemini_with_keys(
         messages, GEMINI_NOVA_KEYS, MODEL_NOVA,
@@ -247,46 +238,33 @@ def ask_nova(messages):
         use_search=needs_search(last)
     )
 
-
 def ask_pro(messages):
-    """
-    Elyon PRO — gemini-2.5-pro с глубоким thinking.
-    Лимит: 30 сообщений/день.
-    """
+    """Elyon PRO — gemini-2.5-pro. 30 сообщений/день."""
     last = messages[-1]["content"] if messages else ""
     return ask_gemini_with_keys(
         messages, GEMINI_PRO_KEYS, MODEL_PRO,
         thinking_budget=8000,
-        use_search=needs_search(last)
+        use_search=needs_search(last),
+        fallback_model=MODEL_PRO_FALLBACK
     )
 
-
 def ask_absolution(messages):
-    """
-    Elyon Absolution — gemini-2.5-pro с максимальным thinking.
-    Лимит: 30 сообщений/день.
-    """
+    """Elyon Absolution — gemini-2.5-pro max thinking. 30 сообщений/день."""
     last = messages[-1]["content"] if messages else ""
     keys = GEMINI_ABS_KEYS or GEMINI_PRO_KEYS
     return ask_gemini_with_keys(
         messages, keys, MODEL_ABSOLUTION,
         thinking_budget=16000,
-        use_search=needs_search(last)
+        use_search=needs_search(last),
+        fallback_model=MODEL_PRO_FALLBACK
     )
 
-
 def ask_gemini(messages):
-    """Алиас — обратная совместимость для старых вызовов в bot.py."""
+    """Алиас — обратная совместимость."""
     return ask_nova(messages)
-
-# ── Запрос с файлом ───────────────────────────────────────────────
 
 def ask_with_file(file_bytes, mime_type, file_name, user_prompt, history,
                   use_pro=False, model_tier="core"):
-    """
-    Отправляет файл + текст в Gemini.
-    model_tier: 'core' | 'nova' | 'pro' | 'absolution'
-    """
     tier_cfg = {
         "core":       (GEMINI_NOVA_KEYS or GEMINI_PRO_KEYS, MODEL_CORE,       0),
         "nova":       (GEMINI_NOVA_KEYS,                      MODEL_NOVA,      1024),
@@ -294,32 +272,25 @@ def ask_with_file(file_bytes, mime_type, file_name, user_prompt, history,
         "absolution": (GEMINI_ABS_KEYS or GEMINI_PRO_KEYS,    MODEL_ABSOLUTION,16000),
     }
     keys, model, thinking_budget = tier_cfg.get(model_tier, tier_cfg["core"])
-
-    # use_pro override (обратная совместимость)
     if use_pro and model_tier == "core":
         keys = GEMINI_NOVA_KEYS; model = MODEL_NOVA; thinking_budget = 1024
-
     if not keys:
         raise Exception("NO_KEYS: ключи не настроены")
 
     shuffled = keys.copy()
     random.shuffle(shuffled)
-
     for key in shuffled:
         try:
             client = genai.Client(api_key=key)
-
             file_obj = client.files.upload(
                 file=io.BytesIO(file_bytes),
                 config={"mime_type": mime_type, "display_name": file_name}
             )
-
             contents = []
             for msg in history[:-1]:
                 role = "model" if msg["role"] == "assistant" else "user"
                 contents.append(genai_types.Content(
-                    role=role,
-                    parts=[genai_types.Part(text=str(msg["content"]))]
+                    role=role, parts=[genai_types.Part(text=str(msg["content"]))]
                 ))
             contents.append(genai_types.Content(
                 role="user",
@@ -330,15 +301,9 @@ def ask_with_file(file_bytes, mime_type, file_name, user_prompt, history,
                     genai_types.Part(text=user_prompt)
                 ]
             ))
-
-            cfg = genai_types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT
-            )
+            cfg = genai_types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT)
             if thinking_budget > 0:
-                cfg.thinking_config = genai_types.ThinkingConfig(
-                    thinking_budget=thinking_budget
-                )
-
+                cfg.thinking_config = genai_types.ThinkingConfig(thinking_budget=thinking_budget)
             response = client.models.generate_content(
                 model=model, contents=contents, config=cfg
             )
@@ -347,7 +312,6 @@ def ask_with_file(file_bytes, mime_type, file_name, user_prompt, history,
             except:
                 pass
             return safe_text(response.text)
-
         except Exception as e:
             err = str(e)
             print(f"ask_with_file error: {err[:120]}")
@@ -359,12 +323,12 @@ def ask_with_file(file_bytes, mime_type, file_name, user_prompt, history,
 
     raise Exception("Лимит запросов исчерпан. Попробуй через минуту.")
 
-# ── Статус ключей ─────────────────────────────────────────────────
-
 def check_keys_status():
     results = {"core_flash_lite": [], "nova_flash": [], "pro": [], "absolution": []}
-
     def test(key, model):
+        if not key:
+            return {"key": "(empty)", "status": "NOT SET — check Render env vars"}
+        key_preview = key[:8] + "..." + key[-4:]  # показываем начало И конец для диагностики
         try:
             client = genai.Client(api_key=key)
             client.models.generate_content(
@@ -372,16 +336,21 @@ def check_keys_status():
                 contents=[genai_types.Content(role="user", parts=[genai_types.Part(text="Hi")])],
                 config=genai_types.GenerateContentConfig()
             )
-            return {"key": key[:8]+"...", "status": "ok"}
+            return {"key": key_preview, "status": "ok"}
         except Exception as e:
             err = str(e)
             if "429" in err or "RESOURCE_EXHAUSTED" in err:
-                return {"key": key[:8]+"...", "status": "exhausted"}
+                # Уточняем причину: billing или реальный лимит
+                detail = "no billing" if "billing" in err.lower() else "quota exceeded"
+                return {"key": key_preview, "status": f"exhausted ({detail})"}
             elif "401" in err or "API_KEY_INVALID" in err:
-                return {"key": key[:8]+"...", "status": "invalid"}
-            elif "503" in err:
-                return {"key": key[:8]+"...", "status": "unavailable"}
-            return {"key": key[:8]+"...", "status": f"error: {err[:40]}"}
+                return {"key": key_preview, "status": "invalid key"}
+            elif "503" in err or "UNAVAILABLE" in err:
+                return {"key": key_preview, "status": "unavailable"}
+            elif "404" in err or "not found" in err.lower():
+                return {"key": key_preview, "status": f"model not found: {model}"}
+            # Показываем реальную ошибку для диагностики
+            return {"key": key_preview, "status": f"error: {err[:80]}"}
 
     for k in GEMINI_NOVA_KEYS: results["core_flash_lite"].append(test(k, MODEL_CORE))
     for k in GEMINI_NOVA_KEYS: results["nova_flash"].append(test(k, MODEL_NOVA))
