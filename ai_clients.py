@@ -8,10 +8,10 @@ from google.genai import types as genai_types
 
 # ══════════════════════════════════════════════════════════════════
 # МОДЕЛИ:
-#   Elyon Core        → gemini-2.5-flash-lite-preview-06-17
-#   Elyon Nova        → gemini-2.5-flash
-#   Elyon PRO         → gemini-2.5-pro
-#   Elyon Absolution  → gemini-2.5-pro
+#   Elyon Core        → gemini-2.5-flash (thinking_budget=0, быстрый/бесплатный)
+#   Elyon Nova        → gemini-2.5-flash (thinking_budget=1024)
+#   Elyon PRO         → gemini-2.5-flash (thinking_budget=8000)
+#   Elyon Absolution  → gemini-2.5-flash (thinking_budget=16000)
 #
 # ВАЖНО по exhausted: убедись что GEMINI_PRO_KEY_1/2 и GEMINI_ABS_KEY_1/2
 # созданы в ОТДЕЛЬНЫХ Google Cloud проектах от NOVA ключей.
@@ -48,8 +48,9 @@ if not GEMINI_ABS_KEYS and GEMINI_PRO_KEYS:
 GEMINI_FREE_KEYS = GEMINI_NOVA_KEYS
 
 # ── Модели ────────────────────────────────────────────────────────
-# flash-lite-preview — стабильная preview версия с отдельной квотой
-MODEL_CORE       = "gemini-2.5-flash-lite-preview-06-17"
+# Core использует flash без thinking — быстро и бесплатно
+# gemini-2.5-flash-lite-preview-06-17 была удалена Google
+MODEL_CORE       = "gemini-2.5-flash"
 MODEL_NOVA       = "gemini-2.5-flash"
 # gemini-2.5-pro требует Google Cloud Billing
 # На бесплатном AI Studio — используем flash с большим thinking
@@ -57,10 +58,6 @@ MODEL_NOVA       = "gemini-2.5-flash"
 MODEL_PRO        = "gemini-2.5-flash"
 MODEL_ABSOLUTION = "gemini-2.5-flash"
 
-# ВАЖНО: gemini-2.5-pro требует billing в Google Cloud
-# На бесплатном AI Studio tier — недоступна (возвращает 429)
-# Используем gemini-2.5-flash с максимальным thinking для PRO/ABS
-# Если у тебя включён billing — замени обратно на "gemini-2.5-pro"
 MODEL_PRO_FALLBACK = "gemini-2.5-flash"
 
 SYSTEM_PROMPT = (
@@ -156,7 +153,7 @@ def needs_search(text):
 def ask_gemini_with_keys(messages, keys, model, thinking_budget=0,
                           use_search=False, fallback_model=None):
     """
-    thinking_budget: 0=нет, 1024=Nova, 8000=PRO, 16000=Absolution
+    thinking_budget: 0=нет (Core), 1024=Nova, 8000=PRO, 16000=Absolution
     fallback_model: если основная модель exhausted — пробуем fallback
     """
     if not keys:
@@ -217,7 +214,7 @@ def ask_gemini_with_keys(messages, keys, model, thinking_budget=0,
 
 
 def ask_gpt(messages):
-    """Elyon Core — gemini-2.5-flash-lite-preview. 15 сообщений/день."""
+    """Elyon Core — gemini-2.5-flash без thinking. 15 сообщений/день."""
     last = messages[-1]["content"] if messages else ""
     keys = GEMINI_NOVA_KEYS or GEMINI_PRO_KEYS or GEMINI_ABS_KEYS
     if not keys:
@@ -226,7 +223,7 @@ def ask_gpt(messages):
         messages, keys, MODEL_CORE,
         thinking_budget=0,
         use_search=needs_search(last),
-        fallback_model=MODEL_NOVA
+        fallback_model=None
     )
 
 def ask_nova(messages):
@@ -239,7 +236,7 @@ def ask_nova(messages):
     )
 
 def ask_pro(messages):
-    """Elyon PRO — gemini-2.5-pro. 30 сообщений/день."""
+    """Elyon PRO — gemini-2.5-flash с высоким thinking. 30 сообщений/день."""
     last = messages[-1]["content"] if messages else ""
     return ask_gemini_with_keys(
         messages, GEMINI_PRO_KEYS, MODEL_PRO,
@@ -249,7 +246,7 @@ def ask_pro(messages):
     )
 
 def ask_absolution(messages):
-    """Elyon Absolution — gemini-2.5-pro max thinking. 30 сообщений/день."""
+    """Elyon Absolution — gemini-2.5-flash max thinking. 30 сообщений/день."""
     last = messages[-1]["content"] if messages else ""
     keys = GEMINI_ABS_KEYS or GEMINI_PRO_KEYS
     return ask_gemini_with_keys(
@@ -266,10 +263,10 @@ def ask_gemini(messages):
 def ask_with_file(file_bytes, mime_type, file_name, user_prompt, history,
                   use_pro=False, model_tier="core"):
     tier_cfg = {
-        "core":       (GEMINI_NOVA_KEYS or GEMINI_PRO_KEYS, MODEL_CORE,       0),
-        "nova":       (GEMINI_NOVA_KEYS,                      MODEL_NOVA,      1024),
-        "pro":        (GEMINI_PRO_KEYS,                       MODEL_PRO,       8000),
-        "absolution": (GEMINI_ABS_KEYS or GEMINI_PRO_KEYS,    MODEL_ABSOLUTION,16000),
+        "core":       (GEMINI_NOVA_KEYS or GEMINI_PRO_KEYS, MODEL_CORE,        0),
+        "nova":       (GEMINI_NOVA_KEYS,                     MODEL_NOVA,       1024),
+        "pro":        (GEMINI_PRO_KEYS,                      MODEL_PRO,        8000),
+        "absolution": (GEMINI_ABS_KEYS or GEMINI_PRO_KEYS,   MODEL_ABSOLUTION, 16000),
     }
     keys, model, thinking_budget = tier_cfg.get(model_tier, tier_cfg["core"])
     if use_pro and model_tier == "core":
@@ -324,11 +321,11 @@ def ask_with_file(file_bytes, mime_type, file_name, user_prompt, history,
     raise Exception("Лимит запросов исчерпан. Попробуй через минуту.")
 
 def check_keys_status():
-    results = {"core_flash_lite": [], "nova_flash": [], "pro": [], "absolution": []}
+    results = {"core_flash": [], "nova_flash": [], "pro": [], "absolution": []}
     def test(key, model):
         if not key:
             return {"key": "(empty)", "status": "NOT SET — check Render env vars"}
-        key_preview = key[:8] + "..." + key[-4:]  # показываем начало И конец для диагностики
+        key_preview = key[:8] + "..." + key[-4:]
         try:
             client = genai.Client(api_key=key)
             client.models.generate_content(
@@ -340,7 +337,6 @@ def check_keys_status():
         except Exception as e:
             err = str(e)
             if "429" in err or "RESOURCE_EXHAUSTED" in err:
-                # Уточняем причину: billing или реальный лимит
                 detail = "no billing" if "billing" in err.lower() else "quota exceeded"
                 return {"key": key_preview, "status": f"exhausted ({detail})"}
             elif "401" in err or "API_KEY_INVALID" in err:
@@ -349,10 +345,9 @@ def check_keys_status():
                 return {"key": key_preview, "status": "unavailable"}
             elif "404" in err or "not found" in err.lower():
                 return {"key": key_preview, "status": f"model not found: {model}"}
-            # Показываем реальную ошибку для диагностики
             return {"key": key_preview, "status": f"error: {err[:80]}"}
 
-    for k in GEMINI_NOVA_KEYS: results["core_flash_lite"].append(test(k, MODEL_CORE))
+    for k in GEMINI_NOVA_KEYS: results["core_flash"].append(test(k, MODEL_CORE))
     for k in GEMINI_NOVA_KEYS: results["nova_flash"].append(test(k, MODEL_NOVA))
     for k in GEMINI_PRO_KEYS:  results["pro"].append(test(k, MODEL_PRO))
     for k in (GEMINI_ABS_KEYS or GEMINI_PRO_KEYS): results["absolution"].append(test(k, MODEL_ABSOLUTION))
